@@ -25,7 +25,7 @@ async def health_check(db: AsyncSession = Depends(get_async_db)):
     try:
         # Test query to check database connection
         result = await db.execute(text("SELECT 1"))
-        await result.fetchone()
+        row = result.scalar()  # Use scalar() instead of fetchone()
         db_status["latency_ms"] = int((time.time() - start_time) * 1000)
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
