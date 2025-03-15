@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: ai-sales-analyst-api
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+    networks:
+      - app-network
+
+  db:
+    image: postgres:15
+    container_name: ai-sales-analyst-db
+    restart: always
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=ai_sales_analyst
+    ports:
+      - "5432:5432"
+    networks:
+      - app-network
+
+  redis:
+    image: redis:7
+    container_name: ai-sales-analyst-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app-network
+
+  celery:
+    build: .
+    container_name: ai-sales-analyst-celery
+    restart: always
+    command: celery -A app.core.scheduler.celery worker --loglevel=info
+    env_file:
+      - .env
+    depends_on:
+      - api
+      - redis
+      - db
+    networks:
+      - app-network
+
+  celery-beat:
+    build: .
+    container_name: ai-sales-analyst-celery-beat
+    restart: always
+    command: celery -A app.core.scheduler.celery beat --loglevel=info
+    env_file:
+      - .env
+    depends_on:
+      - api
+      - redis
+      - celery
+    networks:
+      - app-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  app-network:
+    driver: bridge
