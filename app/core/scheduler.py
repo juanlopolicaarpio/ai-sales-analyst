@@ -4,9 +4,8 @@ from celery import Celery
 from celery.schedules import crontab
 from sqlalchemy.orm import Session
 from loguru import logger
-
+from app.db.database import SessionLocal, AsyncSessionLocal
 from app.config import settings
-from app.db.database import SessionLocal
 from app.db import crud, models
 from app.services.analytics import update_store_data, analyze_sales_data
 from app.services.anomaly_detection import detect_anomalies

@@ -24,7 +24,7 @@ httpx==0.25.0
 slack-sdk==3.22.0
 twilio==8.5.0
 sendgrid==6.10.0
-shopify==12.3.0
+ShopifyAPI==12.3.0
 
 # Scheduling & Background Tasks
 celery==5.3.4
