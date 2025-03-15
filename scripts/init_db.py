@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.sql import text
 from sqlalchemy.orm import sessionmaker
 from passlib.context import CryptContext
 
@@ -102,11 +103,11 @@ async def init_db():
         session.add(store)
         await session.flush()
         
-        # Associate user with store
-        stmt = """
+        # Associate user with store using text() for raw SQL
+        stmt = text("""
         INSERT INTO store_user_association (user_id, store_id)
         VALUES (:user_id, :store_id)
-        """
+        """)
         await session.execute(stmt, {"user_id": user_id, "store_id": store_id})
         
         # Create sample products
@@ -192,7 +193,7 @@ async def init_db():
                 channel="slack",
                 direction=m_data["direction"],
                 content=m_data["content"],
-                metadata={"timestamp": datetime.datetime.utcnow().isoformat()},
+                message_metadata={"timestamp": datetime.datetime.utcnow().isoformat()},  # Note the renamed field
                 created_at=datetime.datetime.utcnow() - datetime.timedelta(hours=i)
             )
             session.add(message)

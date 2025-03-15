@@ -4,12 +4,7 @@ from typing import Dict, List, Any, Optional, Union
 from datetime import datetime, timedelta
 from loguru import logger
 
-from langchain.llms import OpenAI
-from langchain.chat_models import ChatOpenAI
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
-from langchain.schema import HumanMessage, SystemMessage, AIMessage
-
+from openai import OpenAI
 from app.config import settings
 from app.utils.helpers import format_currency, format_percentage
 
@@ -21,11 +16,7 @@ class SalesAnalystAgent:
     
     def __init__(self):
         """Initialize the AI agent with necessary components."""
-        self.llm = ChatOpenAI(
-            model_name="gpt-4",
-            temperature=0.2,
-            openai_api_key=settings.OPENAI_API_KEY
-        )
+        self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
         
         # Define system prompt for the agent
         self.system_prompt = """
@@ -57,9 +48,9 @@ class SalesAnalystAgent:
         Returns:
             str: Response to the user
         """
-        # Build message history
+        # Build messages array
         messages = [
-            SystemMessage(content=self.system_prompt),
+            {"role": "system", "content": self.system_prompt},
         ]
         
         # Add user context
@@ -71,22 +62,26 @@ class SalesAnalystAgent:
         - Timezone: {user_context.get('timezone', 'UTC')}
         """
         
-        messages.append(SystemMessage(content=context_prompt))
+        messages.append({"role": "system", "content": context_prompt})
         
         # Add sales data if available
         if sales_data:
             sales_context = self._format_sales_data(sales_data)
-            messages.append(SystemMessage(content=f"Here is the relevant sales data:\n{sales_context}"))
+            messages.append({"role": "system", "content": f"Here is the relevant sales data:\n{sales_context}"})
         
         # Add user query
-        messages.append(HumanMessage(content=query))
+        messages.append({"role": "user", "content": query})
         
         try:
-            # Get response from LLM
-            response = self.llm(messages)
-            return response.content
+            # Get response from OpenAI
+            response = self.client.chat.completions.create(
+                model="gpt-4",
+                messages=messages,
+                temperature=0.2
+            )
+            return response.choices[0].message.content
         except Exception as e:
-            logger.error(f"Error getting response from LLM: {e}")
+            logger.error(f"Error getting response from OpenAI: {e}")
             return "I'm sorry, I encountered an error while analyzing your request. Please try again later."
     
     def _format_sales_data(self, sales_data: Dict[str, Any]) -> str:
@@ -158,13 +153,17 @@ class SalesAnalystAgent:
         """
         
         messages = [
-            SystemMessage(content=self.system_prompt),
-            HumanMessage(content=summary_prompt)
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": summary_prompt}
         ]
         
         try:
-            response = self.llm(messages)
-            return response.content
+            response = self.client.chat.completions.create(
+                model="gpt-4",
+                messages=messages,
+                temperature=0.2
+            )
+            return response.choices[0].message.content
         except Exception as e:
             logger.error(f"Error generating daily summary: {e}")
             return f"Daily Sales Summary for {store_name}\n\nTotal Sales: {format_currency(sales_data.get('summary', {}).get('total_sales', 0))}\nTotal Orders: {sales_data.get('summary', {}).get('total_orders', 0)}\n\nUnable to generate detailed summary at this time."
@@ -201,13 +200,17 @@ class SalesAnalystAgent:
         """
         
         messages = [
-            SystemMessage(content=self.system_prompt),
-            HumanMessage(content=alert_prompt)
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": alert_prompt}
         ]
         
         try:
-            response = self.llm(messages)
-            return response.content
+            response = self.client.chat.completions.create(
+                model="gpt-4",
+                messages=messages,
+                temperature=0.2
+            )
+            return response.choices[0].message.content
         except Exception as e:
             logger.error(f"Error generating anomaly alert: {e}")
             return f"🚨 ALERT: Unusual {anomaly_type} detected for {store_name}. Current value: {format_currency(anomaly_value) if anomaly_type == 'sales' else anomaly_value}, expected around {format_currency(expected_value) if anomaly_type == 'sales' else expected_value} ({format_percentage(percentage_change)} change)."

@@ -158,7 +158,7 @@ class Message(Base):
     channel = Column(String, nullable=False)  # slack, whatsapp, email
     direction = Column(String, nullable=False)  # incoming, outgoing
     content = Column(Text, nullable=False)
-    metadata = Column(JSON, nullable=True)  # Additional data about the message
+    message_metadata = Column(JSON, nullable=True)  # Additional data about the message (renamed from 'metadata')
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     # Relationships
