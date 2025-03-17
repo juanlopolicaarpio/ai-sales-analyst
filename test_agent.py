@@ -66,10 +66,10 @@ async def test_shopify_fetch():
     print("\nTesting Shopify connection...")
     
     # Check if Shopify credentials are available
-    if not all([settings.SHOPIFY_API_KEY, settings.SHOPIFY_API_SECRET, settings.SHOPIFY_STORE_URL]):
-        print("❌ Shopify credentials not configured. Set SHOPIFY_API_KEY, SHOPIFY_API_SECRET, and SHOPIFY_STORE_URL in .env")
-        return False
-    
+# Check if Shopify credentials are available
+    if not all([settings.SHOPIFY_API_KEY, settings.SHOPIFY_API_SECRET, settings.SHOPIFY_STORE_URL, settings.SHOPIFY_ACCESS_TOKEN]):
+        print("❌ Shopify credentials not configured. Set SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SHOPIFY_STORE_URL, and SHOPIFY_ACCESS_TOKEN in .env")
+        return False    
     try:
         # Create a test store object
         test_store = Store(

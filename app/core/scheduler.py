@@ -28,10 +28,12 @@ celery.conf.update(
 )
 
 # Set up periodic tasks
+# Set up periodic tasks
+# Set up periodic tasks
 celery.conf.beat_schedule = {
     "fetch_new_orders_hourly": {
         "task": "app.core.scheduler.fetch_new_orders",
-        "schedule": crontab(minute=0),  # Every hour at minute 0
+        "schedule": crontab(minute="*/15"),  # Every 15 minutes
     },
     "detect_anomalies_hourly": {
         "task": "app.core.scheduler.detect_hourly_anomalies",
@@ -42,8 +44,6 @@ celery.conf.beat_schedule = {
         "schedule": crontab(hour=0, minute=15),  # Every day at 00:15 UTC
     },
 }
-
-
 @celery.task
 def fetch_new_orders():
     """Fetch new orders from all active stores."""

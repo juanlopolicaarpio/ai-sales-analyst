@@ -40,10 +40,11 @@ class Settings(BaseSettings):
     EMAIL_FROM: Optional[str] = None
     
     # Shopify Integration
+# Shopify Integration
     SHOPIFY_API_KEY: Optional[str] = None
     SHOPIFY_API_SECRET: Optional[str] = None
     SHOPIFY_STORE_URL: Optional[str] = None
-    
+    SHOPIFY_ACCESS_TOKEN: Optional[str] = None    
     # AWS Settings
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None

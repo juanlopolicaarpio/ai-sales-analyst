@@ -19,18 +19,21 @@ async def get_sales_data(
 ) -> Dict[str, Any]:
     """
     Get sales data for a specific time range.
-    
+
     Args:
         db: Database session
         store_id: Store ID
         time_range: Time range (today, yesterday, last_7_days, last_30_days)
         timezone: User's timezone
-    
+
     Returns:
         dict: Sales data
     """
     # Get date range
     start_date, end_date = get_date_range(time_range, timezone)
+    # Convert to timezone-naive datetimes (to match the stored order_date)
+    start_date = start_date.replace(tzinfo=None)
+    end_date = end_date.replace(tzinfo=None)
     
     # Get orders within the date range
     orders = await crud.get_orders_by_date_range(db, store_id, start_date, end_date)
@@ -72,8 +75,8 @@ async def get_sales_data(
             product_sales[item.product_id]["quantity"] += item.quantity
     
     top_products = sorted(
-        product_sales.values(), 
-        key=lambda x: x["revenue"], 
+        product_sales.values(),
+        key=lambda x: x["revenue"],
         reverse=True
     )[:10]
     
@@ -101,6 +104,8 @@ async def get_sales_data(
         "anomalies": [],  # This would be populated by the anomaly detection service
     }
 
+# Fix the timezone issue in update_shopify_orders function in app/services/analytics.py
+# The issue is that order_date is timezone-aware from Shopify, but we need a timezone-naive datetime for PostgreSQL
 
 async def update_shopify_orders(db: AsyncSession, store: models.Store, since_date: Optional[datetime] = None):
     """
@@ -131,6 +136,10 @@ async def update_shopify_orders(db: AsyncSession, store: models.Store, since_dat
             
             if not existing_order:
                 # Create new order
+                # Convert timezone-aware datetime to timezone-naive by replacing tzinfo
+                order_date = datetime.fromisoformat(order_data["created_at"].replace("Z", "+00:00"))
+                naive_order_date = order_date.replace(tzinfo=None)
+                
                 new_order = {
                     "store_id": str(store.id),
                     "platform_order_id": str(order_data["id"]),
@@ -140,7 +149,7 @@ async def update_shopify_orders(db: AsyncSession, store: models.Store, since_dat
                     "customer_email": order_data.get("customer", {}).get("email"),
                     "total_price": float(order_data["total_price"]),
                     "currency": order_data["currency"],
-                    "order_date": datetime.fromisoformat(order_data["created_at"].replace("Z", "+00:00")),
+                    "order_date": naive_order_date,  # Use timezone-naive datetime
                     "order_data": order_data
                 }
                 
@@ -175,8 +184,6 @@ async def update_shopify_orders(db: AsyncSession, store: models.Store, since_dat
     finally:
         # Close Shopify session
         client.close_session()
-
-
 async def update_shopify_products(db: AsyncSession, store: models.Store):
     """
     Update products from Shopify.

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union
 import httpx
 from loguru import logger
+import re
 
 from app.config import settings
 from app.db.models import Store
@@ -24,16 +25,37 @@ class ShopifyClient:
         self.session = None
         self.api_version = '2023-10'  # Update to latest version as needed
         
+        # Extract the actual store domain from admin URL if needed
+        store_url = store.store_url
+        if "admin.shopify.com/store/" in store_url:
+            # Extract store name from admin URL
+            match = re.search(r'store/([^/]+)', store_url)
+            if match:
+                store_name = match.group(1)
+                store_url = f"{store_name}.myshopify.com"
+                logger.info(f"Extracted store domain: {store_url} from admin URL")
+        
+        # Clean up URL format (remove https:// if present)
+        if store_url.startswith('https://'):
+            store_url = store_url[8:]
+        elif store_url.startswith('http://'):
+            store_url = store_url[7:]
+            
+        self.shop_url = store_url
+        self.access_token = store.access_token or settings.SHOPIFY_ACCESS_TOKEN
+        
+        logger.info(f"Initialized Shopify client for shop: {self.shop_url}")
+        
     def _initialize_session(self):
         """Initialize or reinitialize the Shopify session."""
-        if not self.store.access_token:
+        if not self.access_token:
             raise ValueError("No Shopify access token found for store")
         
         # Initialize the Shopify session with private app credentials
-        shop_url = f"https://{self.store.api_key}:{self.store.access_token}@{self.store.store_url}"
-        self.session = shopify.Session(shop_url, self.api_version, self.store.access_token)
+        shop_url = f"https://{self.store.api_key}:{self.access_token}@{self.shop_url}"
+        self.session = shopify.Session(shop_url, self.api_version, self.access_token)
         shopify.ShopifyResource.activate_session(self.session)
-    
+        
     def close_session(self):
         """Close the Shopify session."""
         if self.session:
@@ -53,35 +75,51 @@ class ShopifyClient:
         Returns:
             dict: API response
         """
-        base_url = f"https://{self.store.store_url}/admin/api/{self.api_version}"
+        base_url = f"https://{self.shop_url}/admin/api/{self.api_version}"
         url = f"{base_url}/{endpoint}.json"
         
         headers = {
-            "X-Shopify-Access-Token": self.store.access_token,
+            "X-Shopify-Access-Token": self.access_token,
             "Content-Type": "application/json"
         }
         
+        logger.debug(f"Making Shopify API request to: {url}")
+        logger.debug(f"Using access token: {'*' * 5}{self.access_token[-4:] if self.access_token else 'None'}")
+        
         async with httpx.AsyncClient() as client:
-            if method == "GET":
-                response = await client.get(url, headers=headers, params=params)
-            elif method == "POST":
-                response = await client.post(url, headers=headers, json=data)
-            elif method == "PUT":
-                response = await client.put(url, headers=headers, json=data)
-            elif method == "DELETE":
-                response = await client.delete(url, headers=headers, params=params)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-            
-            # Handle rate limiting
-            if response.status_code == 429:
-                retry_after = int(response.headers.get("Retry-After", 1))
-                logger.warning(f"Shopify rate limit hit. Waiting {retry_after} seconds.")
-                time.sleep(retry_after)
-                return await self._make_request(endpoint, method, params, data)
-            
-            response.raise_for_status()
-            return response.json()
+            try:
+                if method == "GET":
+                    response = await client.get(url, headers=headers, params=params)
+                elif method == "POST":
+                    response = await client.post(url, headers=headers, json=data)
+                elif method == "PUT":
+                    response = await client.put(url, headers=headers, json=data)
+                elif method == "DELETE":
+                    response = await client.delete(url, headers=headers, params=params)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+                
+                # Log response status and headers for debugging
+                logger.debug(f"Response status: {response.status_code}")
+                logger.debug(f"Response headers: {response.headers}")
+                
+                # Handle rate limiting
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 1))
+                    logger.warning(f"Shopify rate limit hit. Waiting {retry_after} seconds.")
+                    time.sleep(retry_after)
+                    return await self._make_request(endpoint, method, params, data)
+                
+                # If we get an error, log the response content
+                if response.status_code >= 400:
+                    logger.error(f"Shopify API error: {response.status_code}")
+                    logger.error(f"Response body: {response.text}")
+                
+                response.raise_for_status()
+                return response.json()
+            except Exception as e:
+                logger.error(f"Error in request to {url}: {str(e)}")
+                raise
     
     async def get_shop_info(self) -> Dict[str, Any]:
         """

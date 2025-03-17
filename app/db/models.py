@@ -73,9 +73,7 @@ class Store(Base):
     access_token = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
-    
-    # Relationships
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)    # Relationships
     users = relationship("User", secondary=store_user_association, back_populates="stores")
     orders = relationship("Order", back_populates="store")
     products = relationship("Product", back_populates="store")
