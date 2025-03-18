@@ -112,19 +112,17 @@ async def get_orders_by_date_range(
     end_date: datetime
 ):
     """Get orders within a date range."""
-    result = await db.execute(
-        select(models.Order).where(
-            and_(
-                models.Order.store_id == store_id,
-                models.Order.order_date >= start_date,
-                models.Order.order_date <= end_date
-            )
+    stmt = select(models.Order).where(
+        and_(
+            models.Order.store_id == store_id,
+            models.Order.order_date >= start_date,
+            models.Order.order_date <= end_date
         )
     )
+    result = await db.execute(stmt)
     return result.scalars().all()
-
-
-# Product CRUD operations
+    
+    # Product CRUD operations
 async def create_product(db: AsyncSession, product_data: Dict[str, Any]):
     """Create a new product."""
     db_product = models.Product(**product_data)

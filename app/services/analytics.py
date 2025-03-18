@@ -2,6 +2,8 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from sqlalchemy import select, and_
 from loguru import logger
 import pandas as pd
 import numpy as np
@@ -35,17 +37,34 @@ async def get_sales_data(
     start_date = start_date.replace(tzinfo=None)
     end_date = end_date.replace(tzinfo=None)
     
-    # Get orders within the date range
-    orders = await crud.get_orders_by_date_range(db, store_id, start_date, end_date)
+    # FIXED: Use selectinload to eager load order_items instead of lazy loading
+    stmt = select(models.Order).where(
+        and_(
+            models.Order.store_id == store_id,
+            models.Order.order_date >= start_date,
+            models.Order.order_date <= end_date
+        )
+    ).options(selectinload(models.Order.order_items))
+    
+    result = await db.execute(stmt)
+    orders = result.scalars().all()
     
     # Get orders for the previous period for comparison
     duration = (end_date - start_date).days + 1
     prev_start_date = start_date - timedelta(days=duration)
     prev_end_date = end_date - timedelta(days=duration)
     
-    prev_orders = await crud.get_orders_by_date_range(
-        db, store_id, prev_start_date, prev_end_date
-    )
+    # FIXED: Use selectinload for previous orders too
+    prev_stmt = select(models.Order).where(
+        and_(
+            models.Order.store_id == store_id,
+            models.Order.order_date >= prev_start_date,
+            models.Order.order_date <= prev_end_date
+        )
+    ).options(selectinload(models.Order.order_items))
+    
+    prev_result = await db.execute(prev_stmt)
+    prev_orders = prev_result.scalars().all()
     
     # Calculate summary metrics
     total_sales = sum(order.total_price for order in orders)
@@ -64,7 +83,7 @@ async def get_sales_data(
     # Get top products
     product_sales = {}
     for order in orders:
-        for item in order.order_items:
+        for item in order.order_items:  # Now safely using eager-loaded relationship
             if item.product_id not in product_sales:
                 product_sales[item.product_id] = {
                     "name": item.product_name,
@@ -102,9 +121,7 @@ async def get_sales_data(
         },
         "top_products": top_products,
         "anomalies": [],  # This would be populated by the anomaly detection service
-    }
-
-# Fix the timezone issue in update_shopify_orders function in app/services/analytics.py
+    }# Fix the timezone issue in update_shopify_orders function in app/services/analytics.py
 # The issue is that order_date is timezone-aware from Shopify, but we need a timezone-naive datetime for PostgreSQL
 
 async def update_shopify_orders(db: AsyncSession, store: models.Store, since_date: Optional[datetime] = None):
@@ -137,8 +154,27 @@ async def update_shopify_orders(db: AsyncSession, store: models.Store, since_dat
             if not existing_order:
                 # Create new order
                 # Convert timezone-aware datetime to timezone-naive by replacing tzinfo
-                order_date = datetime.fromisoformat(order_data["created_at"].replace("Z", "+00:00"))
-                naive_order_date = order_date.replace(tzinfo=None)
+                order_date = None
+                if "created_at" in order_data:
+                    # Handle different datetime formats
+                    try:
+                        if order_data["created_at"].endswith('Z'):
+                            # ISO format with Z suffix
+                            order_date = datetime.fromisoformat(order_data["created_at"].replace("Z", "+00:00"))
+                        else:
+                            # Try standard ISO format
+                            order_date = datetime.fromisoformat(order_data["created_at"])
+                    except ValueError:
+                        # Fallback to basic parsing if isoformat fails
+                        from dateutil import parser
+                        order_date = parser.parse(order_data["created_at"])
+                        
+                    # Make timezone-naive for PostgreSQL
+                    if order_date and order_date.tzinfo:
+                        order_date = order_date.replace(tzinfo=None)
+                else:
+                    # Use current time if created_at is missing (should not happen)
+                    order_date = datetime.utcnow()
                 
                 new_order = {
                     "store_id": str(store.id),
@@ -149,7 +185,7 @@ async def update_shopify_orders(db: AsyncSession, store: models.Store, since_dat
                     "customer_email": order_data.get("customer", {}).get("email"),
                     "total_price": float(order_data["total_price"]),
                     "currency": order_data["currency"],
-                    "order_date": naive_order_date,  # Use timezone-naive datetime
+                    "order_date": order_date,  # Use timezone-naive datetime
                     "order_data": order_data
                 }
                 
@@ -157,6 +193,10 @@ async def update_shopify_orders(db: AsyncSession, store: models.Store, since_dat
                 
                 # Process order items
                 for item_data in order_data.get("line_items", []):
+                    # Check if product_id exists and is not None
+                    if item_data.get("product_id") is None:
+                        continue
+                        
                     # Check if we have this product
                     product = await crud.get_product_by_platform_id(
                         db, str(store.id), str(item_data["product_id"])
@@ -168,8 +208,8 @@ async def update_shopify_orders(db: AsyncSession, store: models.Store, since_dat
                         "product_id": str(product.id) if product else None,
                         "platform_product_id": str(item_data["product_id"]),
                         "product_name": item_data["name"],
-                        "variant_name": item_data.get("variant_title"),
-                        "sku": item_data.get("sku"),
+                        "variant_name": item_data.get("variant_title", ""),
+                        "sku": item_data.get("sku", ""),
                         "quantity": item_data["quantity"],
                         "price": float(item_data["price"])
                     }

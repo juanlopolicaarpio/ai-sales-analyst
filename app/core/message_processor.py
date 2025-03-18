@@ -1,12 +1,14 @@
+
 import json
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.core.agent import sales_analyst_agent
 from app.db import crud
-from app.db.models import User, Store
+from app.db.models import User, Store, UserPreference
 from app.utils.helpers import extract_query_intent
 from app.services.analytics import get_sales_data
 
@@ -30,7 +32,7 @@ class MessageProcessor:
             db: Database session
             message_text: The message text
             user_identifier: Dictionary with user identifier (slack_id, whatsapp_number, or email)
-            channel: The channel (slack, whatsapp, email)
+            channel: The channel (slack, whatsapp, email, test)
         
         Returns:
             tuple: (response_text, metadata)
@@ -41,12 +43,22 @@ class MessageProcessor:
             user = await crud.get_user_by_slack_id(db, user_identifier["slack_id"])
         elif channel == "whatsapp" and "whatsapp_number" in user_identifier:
             user = await crud.get_user_by_whatsapp(db, user_identifier["whatsapp_number"])
-        elif channel == "email" and "email" in user_identifier:
+        elif (channel == "email" or channel == "test") and "email" in user_identifier:
+            # Added support for "test" channel using email lookup
             user = await crud.get_user_by_email(db, user_identifier["email"])
         
         if not user:
             logger.warning(f"Unknown user tried to send message via {channel}: {user_identifier}")
             return "I don't recognize you as an authorized user. Please contact your administrator to set up your account.", None
+            
+        # Get user preferences explicitly rather than using lazy loading
+        timezone = "UTC"  # Default timezone
+        preferences_result = await db.execute(
+            select(UserPreference).where(UserPreference.user_id == user.id)
+        )
+        user_preferences = preferences_result.scalars().first()
+        if user_preferences:
+            timezone = user_preferences.timezone or "UTC"
         
         # Log the incoming message
         await crud.create_message(db, {
@@ -73,7 +85,7 @@ class MessageProcessor:
             "name": user.full_name or "Store Owner",
             "store_name": store.name,
             "platform": store.platform,
-            "timezone": user.preferences.timezone if user.preferences else "UTC"
+            "timezone": timezone
         }
         
         # Get relevant sales data based on the intent
