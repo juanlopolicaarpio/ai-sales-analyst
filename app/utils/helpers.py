@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Union
 import pytz
+from loguru import logger
 
 from app.config import settings
 
@@ -107,6 +108,7 @@ def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
     
     Args:
         range_type: "today", "yesterday", "last_7_days", "last_30_days", "this_month", "last_month"
+                   or "specific_month_YYYY_MM" for a specific month
         timezone: User's timezone
     
     Returns:
@@ -141,8 +143,31 @@ def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
         start_date = last_month.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         end_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(microseconds=1)
     
+    elif range_type.startswith("specific_month_"):
+        # Format: specific_month_YYYY_MM
+        try:
+            year, month = map(int, range_type.split("_")[2:])
+            logger.info(f"Processing specific month: {year}-{month}")
+            start_date = datetime(year, month, 1, tzinfo=tz)
+            
+            # Last day of the month: Get first day of next month and subtract 1 microsecond
+            if month == 12:
+                end_date = datetime(year + 1, 1, 1, tzinfo=tz) - timedelta(microseconds=1)
+            else:
+                end_date = datetime(year, month + 1, 1, tzinfo=tz) - timedelta(microseconds=1)
+                
+            logger.info(f"Date range for {range_type}: {start_date} to {end_date}")
+        except (ValueError, IndexError) as e:
+            logger.error(f"Error parsing specific month {range_type}: {e}")
+            # If invalid format, default to last 30 days
+            start_date = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = now
+    
     else:
-        raise ValueError(f"Unknown date range type: {range_type}")
+        logger.warning(f"Unknown date range type: {range_type}, defaulting to last 7 days")
+        # Default to last 7 days if unknown range type
+        start_date = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date = now
     
     # Convert to UTC
     return start_date.astimezone(pytz.UTC), end_date.astimezone(pytz.UTC)
@@ -164,6 +189,18 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
     week_pattern = r"this week|last 7 days|past week|weekly"
     month_pattern = r"this month|last 30 days|past month|monthly"
     
+    # Add patterns for specific months
+    month_names = ["january", "february", "march", "april", "may", "june", 
+                  "july", "august", "september", "october", "november", "december"]
+    month_aliases = ["jan", "feb", "mar", "apr", "may", "jun", 
+                    "jul", "aug", "sep", "oct", "nov", "dec"]
+    
+    # Pattern for "last month_name" (e.g., "last february", "last feb")
+    last_specific_month_pattern = r"last\s+(" + "|".join(month_names + month_aliases) + r")"
+    
+    # Pattern for just month names (e.g., "february", "feb")
+    month_name_pattern = r"\b(" + "|".join(month_names + month_aliases) + r")\b"
+    
     # Basic patterns for metrics
     sales_pattern = r"sales|revenue|earnings|income"
     orders_pattern = r"orders|purchases"
@@ -171,8 +208,48 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
     customers_pattern = r"customers|buyers|clients"
     
     # Determine time range
-    time_range = "today"
-    if re.search(yesterday_pattern, text, re.IGNORECASE):
+    time_range = "last_7_days"  # Default to last 7 days instead of today
+    
+    # Check for specific month patterns first (most specific)
+    if re.search(last_specific_month_pattern, text, re.IGNORECASE):
+        # Extract the month name
+        match = re.search(last_specific_month_pattern, text, re.IGNORECASE)
+        month_text = match.group(1).lower()
+        # Map month alias to full name if needed
+        month_map = dict(zip(month_aliases, range(1, 13)))
+        month_map.update(dict(zip(month_names, range(1, 13))))
+        
+        # Get current date to determine year
+        now = datetime.now()
+        month_num = month_map.get(month_text)
+        
+        if month_num:
+            # If the requested month is ahead of current month, it's from last year
+            year = now.year if month_num <= now.month else now.year - 1
+            time_range = f"specific_month_{year}_{month_num:02d}"
+            logger.info(f"Detected specific month request: {month_text} -> {time_range}")
+    
+    # Check for just month names (without "last")
+    elif re.search(month_name_pattern, text, re.IGNORECASE):
+        match = re.search(month_name_pattern, text, re.IGNORECASE)
+        month_text = match.group(1).lower()
+        # Map month alias to number
+        month_map = dict(zip(month_aliases, range(1, 13)))
+        month_map.update(dict(zip(month_names, range(1, 13))))
+        
+        now = datetime.now()
+        month_num = month_map.get(month_text)
+        
+        if month_num:
+            # Assume current year unless the month is in the future
+            year = now.year if month_num <= now.month else now.year - 1
+            time_range = f"specific_month_{year}_{month_num:02d}"
+            logger.info(f"Detected month name: {month_text} -> {time_range}")
+    
+    # Standard time ranges
+    elif re.search(today_pattern, text, re.IGNORECASE):
+        time_range = "today"
+    elif re.search(yesterday_pattern, text, re.IGNORECASE):
         time_range = "yesterday"
     elif re.search(week_pattern, text, re.IGNORECASE):
         time_range = "last_7_days"
@@ -189,10 +266,12 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
         primary_metric = "customers"
     
     # Determine if user is asking for top products
-    top_products = "top products" in text.lower() or "best selling" in text.lower()
+    top_products = any(phrase in text.lower() for phrase in ["top products", "best selling", "best-selling", "best seliing"])
     
     # Determine if user is asking for a comparison
     comparison = "compare" in text.lower() or "versus" in text.lower() or " vs " in text.lower()
+    
+    logger.info(f"Extracted intent: time_range={time_range}, metric={primary_metric}, top_products={top_products}")
     
     return {
         "time_range": time_range,

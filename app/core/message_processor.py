@@ -1,4 +1,3 @@
-
 import json
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -39,46 +38,80 @@ class MessageProcessor:
         """
         # Find the user based on the channel and identifier
         user = None
-        if channel == "slack" and "slack_id" in user_identifier:
-            user = await crud.get_user_by_slack_id(db, user_identifier["slack_id"])
-        elif channel == "whatsapp" and "whatsapp_number" in user_identifier:
-            user = await crud.get_user_by_whatsapp(db, user_identifier["whatsapp_number"])
-        elif (channel == "email" or channel == "test") and "email" in user_identifier:
-            # Added support for "test" channel using email lookup
-            user = await crud.get_user_by_email(db, user_identifier["email"])
-        
-        if not user:
-            logger.warning(f"Unknown user tried to send message via {channel}: {user_identifier}")
-            return "I don't recognize you as an authorized user. Please contact your administrator to set up your account.", None
+        try:
+            if channel == "slack" and "slack_id" in user_identifier:
+                user = await crud.get_user_by_slack_id(db, user_identifier["slack_id"])
+                logger.debug(f"Looking up user by slack_id: {user_identifier['slack_id']}")
+            elif channel == "whatsapp" and "whatsapp_number" in user_identifier:
+                user = await crud.get_user_by_whatsapp(db, user_identifier["whatsapp_number"])
+                logger.debug(f"Looking up user by whatsapp_number: {user_identifier['whatsapp_number']}")
+            elif (channel == "email" or channel == "test") and "email" in user_identifier:
+                user = await crud.get_user_by_email(db, user_identifier["email"])
+                logger.debug(f"Looking up user by email: {user_identifier['email']}")
+            
+            if not user:
+                logger.warning(f"Unknown user tried to send message via {channel}: {user_identifier}")
+                return "I don't recognize you as an authorized user. Please contact your administrator to set up your account.", None
+        except Exception as e:
+            logger.error(f"Error finding user: {e}")
+            return "I encountered an error while identifying your user account. Please try again later or contact support.", None
             
         # Get user preferences explicitly rather than using lazy loading
         timezone = "UTC"  # Default timezone
-        preferences_result = await db.execute(
-            select(UserPreference).where(UserPreference.user_id == user.id)
-        )
-        user_preferences = preferences_result.scalars().first()
-        if user_preferences:
-            timezone = user_preferences.timezone or "UTC"
+        try:
+            preferences_result = await db.execute(
+                select(UserPreference).where(UserPreference.user_id == user.id)
+            )
+            user_preferences = preferences_result.scalars().first()
+            if user_preferences:
+                timezone = user_preferences.timezone or "UTC"
+                logger.debug(f"Using timezone: {timezone}")
+        except Exception as e:
+            logger.error(f"Error getting user preferences: {e}")
+            # Continue with default timezone
         
         # Log the incoming message
-        await crud.create_message(db, {
-            "user_id": str(user.id),
-            "channel": channel,
-            "direction": "incoming",
-            "content": message_text,
-            "metadata": user_identifier
-        })
+        try:
+            await crud.create_message(db, {
+                "user_id": str(user.id),
+                "channel": channel,
+                "direction": "incoming",
+                "content": message_text,
+                "message_metadata": user_identifier  # Fixed field name from metadata to message_metadata
+            })
+            logger.debug("Logged incoming message successfully")
+        except Exception as e:
+            logger.error(f"Error logging incoming message: {e}")
+            # Continue even if message logging fails
         
         # Get the user's stores
-        stores = await crud.get_stores_by_user(db, str(user.id))
-        if not stores:
-            return "I couldn't find any connected stores for your account. Please set up at least one store to get started.", None
-        
-        # For simplicity, use the first store
-        store = stores[0]
+        try:
+            stores = await crud.get_stores_by_user(db, str(user.id))
+            if not stores:
+                logger.warning(f"No stores found for user {user.id}")
+                return "I couldn't find any connected stores for your account. Please set up at least one store to get started.", None
+            
+            # For simplicity, use the first store
+            store = stores[0]
+            logger.info(f"Using store: {store.name} (ID: {store.id})")
+        except Exception as e:
+            logger.error(f"Error getting user stores: {e}")
+            return "I encountered an error while accessing your store information. Please try again later or contact support.", None
         
         # Extract intent from the message
-        intent = extract_query_intent(message_text)
+        try:
+            intent = extract_query_intent(message_text)
+            logger.info(f"Extracted intent: {intent}")
+        except Exception as e:
+            logger.error(f"Error extracting intent: {e}")
+            intent = {
+                "time_range": "last_7_days",
+                "primary_metric": "sales",
+                "top_products": any(phrase in message_text.lower() for phrase in ["top products", "best selling"]),
+                "comparison": False,
+                "raw_query": message_text
+            }
+            logger.info(f"Using fallback intent: {intent}")
         
         # Get user context
         user_context = {
@@ -91,36 +124,62 @@ class MessageProcessor:
         # Get relevant sales data based on the intent
         sales_data = None
         try:
-            if any(keyword in message_text.lower() for keyword in ["sales", "revenue", "orders", "products"]):
-                sales_data = await get_sales_data(
-                    db, 
-                    str(store.id), 
-                    intent["time_range"],
-                    user_context["timezone"]
-                )
+            # Always try to get sales data regardless of keywords
+            logger.info(f"Fetching sales data for time range: {intent['time_range']}")
+            sales_data = await get_sales_data(
+                db, 
+                str(store.id), 
+                intent["time_range"],
+                user_context["timezone"]
+            )
+            
+            if sales_data:
+                # Log a summary of the retrieved data
+                summary = sales_data.get("summary", {})
+                time_period = sales_data.get("time_period", {})
+                top_products_count = len(sales_data.get("top_products", []))
+                
+                logger.info(f"Retrieved sales data for {time_period.get('range_type')}: "
+                            f"{time_period.get('start_date')} to {time_period.get('end_date')}")
+                logger.info(f"Sales summary: Total sales: {summary.get('total_sales')}, "
+                            f"Orders: {summary.get('total_orders')}, "
+                            f"Top Products: {top_products_count}")
+            else:
+                logger.warning(f"No sales data retrieved for time range: {intent['time_range']}")
         except Exception as e:
             logger.error(f"Error getting sales data: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             # Continue without sales data
         
         # Use AI agent to generate response
         try:
+            logger.info(f"Generating AI response with {'sales data' if sales_data else 'no sales data'}")
             response = await sales_analyst_agent.analyze_query(
                 query=message_text,
                 user_context=user_context,
                 sales_data=sales_data
             )
+            logger.debug(f"AI response generated: {response[:100]}...")
         except Exception as e:
             logger.error(f"Error generating response: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             response = "I'm sorry, I encountered an error while processing your request. Please try again later."
         
         # Log the outgoing message
-        await crud.create_message(db, {
-            "user_id": str(user.id),
-            "channel": channel,
-            "direction": "outgoing",
-            "content": response,
-            "metadata": {"intent": intent, "has_sales_data": sales_data is not None}
-        })
+        try:
+            await crud.create_message(db, {
+                "user_id": str(user.id),
+                "channel": channel,
+                "direction": "outgoing",
+                "content": response,
+                "message_metadata": {"intent": intent, "has_sales_data": sales_data is not None}  # Fixed field name
+            })
+            logger.debug("Logged outgoing message successfully")
+        except Exception as e:
+            logger.error(f"Error logging outgoing message: {e}")
+            # Continue even if message logging fails
         
         return response, {"intent": intent, "user": user_context}
 
