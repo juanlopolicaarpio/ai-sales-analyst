@@ -17,7 +17,11 @@ async def get_sales_data(
     db: AsyncSession,
     store_id: str,
     time_range: str = "today",
-    timezone: str = "UTC"
+    timezone: str = "UTC",
+    include_geo_data: bool = False,
+    include_conversion_rate: bool = False,
+    specific_start_date: Optional[datetime] = None,
+    specific_end_date: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
     Get sales data for a specific time range.
@@ -25,17 +29,28 @@ async def get_sales_data(
     Args:
         db: Database session
         store_id: Store ID
-        time_range: Time range (today, yesterday, last_7_days, last_30_days)
+        time_range: Time range (today, yesterday, last_7_days, last_30_days, custom)
         timezone: User's timezone
+        include_geo_data: Whether to include geographic data
+        include_conversion_rate: Whether to include conversion rate data
+        specific_start_date: Custom start date (for custom time range)
+        specific_end_date: Custom end date (for custom time range)
 
     Returns:
         dict: Sales data
     """
-    # Get date range
-    start_date, end_date = get_date_range(time_range, timezone)
+    # Get date range based on time_range or specific dates
+    if time_range == "custom" and specific_start_date and specific_end_date:
+        start_date = specific_start_date
+        end_date = specific_end_date
+    else:
+        start_date, end_date = get_date_range(time_range, timezone)
+    
     # Convert to timezone-naive datetimes (to match the stored order_date)
-    start_date = start_date.replace(tzinfo=None)
-    end_date = end_date.replace(tzinfo=None)
+    if start_date.tzinfo:
+        start_date = start_date.replace(tzinfo=None)
+    if end_date.tzinfo:
+        end_date = end_date.replace(tzinfo=None)
     
     # FIXED: Use selectinload to eager load order_items instead of lazy loading
     stmt = select(models.Order).where(
@@ -93,11 +108,52 @@ async def get_sales_data(
             product_sales[item.product_id]["revenue"] += item.price * item.quantity
             product_sales[item.product_id]["quantity"] += item.quantity
     
-    top_products = sorted(
+    # Sort for top and bottom products
+    sorted_products = sorted(
         product_sales.values(),
         key=lambda x: x["revenue"],
         reverse=True
-    )[:10]
+    )
+    
+    top_products = sorted_products[:10]
+    bottom_products = sorted_products[-10:] if len(sorted_products) > 10 else []
+    
+    # Fetch geo data if requested
+    geo_data = []
+    if include_geo_data:
+        try:
+            # Get the store to initialize ShopifyClient
+            store_result = await db.execute(select(models.Store).where(models.Store.id == store_id))
+            store = store_result.scalars().first()
+            
+            if store:
+                client = ShopifyClient(store)
+                geo_data = await client.get_geolocation_data(start_date, end_date)
+        except Exception as e:
+            logger.error(f"Error fetching geo data: {e}")
+    
+    # Fetch conversion rate data if requested
+    conversion_data = {}
+    if include_conversion_rate:
+        try:
+            # Get the store to initialize ShopifyClient
+            if not store:  # Only fetch if we didn't already
+                store_result = await db.execute(select(models.Store).where(models.Store.id == store_id))
+                store = store_result.scalars().first()
+                
+            if store:
+                client = ShopifyClient(store)
+                analytics = await client.get_analytics_report("conversion_rate", start_date, end_date)
+                
+                if "shopifyAnalytics" in analytics:
+                    shop_analytics = analytics["shopifyAnalytics"]
+                    conversion_data = {
+                        "sessions": shop_analytics.get("onlineStoreSessions", 0),
+                        "conversion_rate": shop_analytics.get("onlineStoreConversionRate", 0),
+                        "orders": shop_analytics.get("totalOrders", 0)
+                    }
+        except Exception as e:
+            logger.error(f"Error fetching conversion data: {e}")
     
     # Format the response
     return {
@@ -120,10 +176,11 @@ async def get_sales_data(
             "previous_aov": prev_average_order_value,
         },
         "top_products": top_products,
+        "bottom_products": bottom_products,
+        "geo_data": geo_data,
+        "conversion": conversion_data,
         "anomalies": [],  # This would be populated by the anomaly detection service
-    }# Fix the timezone issue in update_shopify_orders function in app/services/analytics.py
-# The issue is that order_date is timezone-aware from Shopify, but we need a timezone-naive datetime for PostgreSQL
-
+    }
 async def update_shopify_orders(db: AsyncSession, store: models.Store, since_date: Optional[datetime] = None):
     """
     Update orders from Shopify.

@@ -105,11 +105,16 @@ class MessageProcessor:
         except Exception as e:
             logger.error(f"Error extracting intent: {e}")
             intent = {
-                "time_range": "last_7_days",
-                "primary_metric": "sales",
-                "top_products": any(phrase in message_text.lower() for phrase in ["top products", "best selling"]),
-                "comparison": False,
-                "raw_query": message_text
+            "time_range": "last_7_days",
+            "primary_metric": "sales",
+            "top_products": any(phrase in message_text.lower() for phrase in ["top products", "best selling"]),
+            "bottom_products": any(phrase in message_text.lower() for phrase in ["bottom products", "worst selling"]),
+            "include_geo_data": False,
+            "include_conversion_rate": False,
+            "comparison": False,
+            "specific_start_date": None,
+            "specific_end_date": None,
+            "raw_query": message_text
             }
             logger.info(f"Using fallback intent: {intent}")
         
@@ -130,7 +135,12 @@ class MessageProcessor:
                 db, 
                 str(store.id), 
                 intent["time_range"],
-                user_context["timezone"]
+                user_context["timezone"],
+                include_geo_data=intent.get("include_geo_data", False),
+                include_conversion_rate=intent.get("include_conversion_rate", False),
+                specific_start_date=intent.get("specific_start_date"),
+                specific_end_date=intent.get("specific_end_date")
+        
             )
             
             if sales_data:

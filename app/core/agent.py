@@ -1,3 +1,4 @@
+# sales_analyst_agent.py
 import json
 import os
 from typing import Dict, List, Any, Optional, Union
@@ -17,8 +18,6 @@ class SalesAnalystAgent:
     def __init__(self):
         """Initialize the AI agent with necessary components."""
         self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        
-        # Define system prompt for the agent
         self.system_prompt = """
 You are an expert e-commerce Sales Analyst AI assistant that helps online store owners understand their sales data.
 Your goal is to provide clear, concise, and actionable insights based on their sales data.
@@ -32,6 +31,10 @@ Guidelines:
 - If you don't have enough information, ask clarifying questions.
 - Format currency values and percentages consistently.
 """
+    
+    def _format_currency(self, amount: float) -> str:
+        """Format a number as Philippine pesos."""
+        return f"₱{float(amount):,.2f}"
     
     async def analyze_query(
         self, 
@@ -120,6 +123,12 @@ Here is context about the user and their store:
         formatted_text += f"- Total Orders: {summary.get('total_orders', 0)}\n"
         formatted_text += f"- Average Order Value: {format_currency(summary.get('average_order_value', 0))}\n"
         
+        # Add conversion data if available
+        conversion = sales_data.get("conversion", {})
+        if conversion:
+            formatted_text += f"- Online Store Sessions: {conversion.get('sessions', 0)}\n"
+            formatted_text += f"- Conversion Rate: {format_percentage(conversion.get('conversion_rate', 0))}\n"
+        
         # Add comparison if available
         comparison = sales_data.get("comparison", {})
         if comparison:
@@ -133,7 +142,29 @@ Here is context about the user and their store:
         if top_products:
             formatted_text += "\nTOP PRODUCTS:\n"
             for i, product in enumerate(top_products[:top_products_limit], 1):
+                quantity = product.get("quantity") or product.get("units_sold") or 0
+                revenue = product.get("revenue", 0)
+                avg_price = revenue / quantity if quantity else 0
+                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} ({quantity} units, avg. {format_currency(avg_price)} each)\n"
+        
+        # Add bottom products if available
+        bottom_products = sales_data.get("bottom_products", [])
+        if bottom_products:
+            formatted_text += "\nBOTTOM PRODUCTS:\n"
+            for i, product in enumerate(bottom_products[:top_products_limit], 1):
                 formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(product.get('revenue', 0))} ({product.get('quantity', 0)} units)\n"
+        
+        # Add geographic data if available
+        geo_data = sales_data.get("geo_data", [])
+        if geo_data:
+            formatted_text += "\nGEOGRAPHIC DISTRIBUTION:\n"
+            for i, country in enumerate(geo_data[:3], 1):  # Limit to top 3 countries
+                formatted_text += f"{i}. {country.get('country', 'Unknown')}: {format_currency(country.get('total_sales', 0))} ({country.get('total_orders', 0)} orders)\n"
+                # Add top region for each country
+                regions = country.get("regions", [])
+                if regions:
+                    top_region = regions[0]
+                    formatted_text += f"   - Top region: {top_region.get('name', 'Unknown')}: {format_currency(top_region.get('total_sales', 0))} ({top_region.get('total_orders', 0)} orders)\n"
         
         # Add anomalies if available
         anomalies = sales_data.get("anomalies", [])
@@ -179,7 +210,12 @@ and top-performing products. End with one or two brief recommendations based on 
             return response.choices[0].message.content
         except Exception as e:
             logger.error(f"Error generating daily summary: {e}")
-            return f"Daily Sales Summary for {store_name}\n\nTotal Sales: {format_currency(sales_data.get('summary', {}).get('total_sales', 0))}\nTotal Orders: {sales_data.get('summary', {}).get('total_orders', 0)}\n\nUnable to generate detailed summary at this time."
+            return (
+                f"Daily Sales Summary for {store_name}\n\n"
+                f"Total Sales: {format_currency(sales_data.get('summary', {}).get('total_sales', 0))}\n"
+                f"Total Orders: {sales_data.get('summary', {}).get('total_orders', 0)}\n\n"
+                "Unable to generate detailed summary at this time."
+            )
     
     async def generate_anomaly_alert(self, anomaly_data: Dict[str, Any], store_name: str) -> str:
         """
@@ -226,7 +262,12 @@ Start with "🚨 ALERT:" followed by a brief but informative message.
             return response.choices[0].message.content
         except Exception as e:
             logger.error(f"Error generating anomaly alert: {e}")
-            return f"🚨 ALERT: Unusual {anomaly_type} detected for {store_name}. Current value: {format_currency(anomaly_value) if anomaly_type == 'sales' else anomaly_value}, expected around {format_currency(expected_value) if anomaly_type == 'sales' else expected_value} ({format_percentage(percentage_change)} change)."
+            return (
+                f"🚨 ALERT: Unusual {anomaly_type} detected for {store_name}. "
+                f"Current value: {format_currency(anomaly_value) if anomaly_type == 'sales' else anomaly_value}, "
+                f"expected around {format_currency(expected_value) if anomaly_type == 'sales' else expected_value} "
+                f"({format_percentage(percentage_change)} change)."
+            )
 
 
 # Create a singleton instance

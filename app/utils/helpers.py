@@ -189,6 +189,9 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
     week_pattern = r"this week|last 7 days|past week|weekly"
     month_pattern = r"this month|last 30 days|past month|monthly"
     
+    # Add pattern for custom date range
+    custom_date_pattern = r"from\s+(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2}/\d{4}|\d{1,2}/\d{1,2}/\d{2})\s+to\s+(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2}/\d{4}|\d{1,2}/\d{1,2}/\d{2})"
+    
     # Add patterns for specific months
     month_names = ["january", "february", "march", "april", "may", "june", 
                   "july", "august", "september", "october", "november", "december"]
@@ -206,12 +209,36 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
     orders_pattern = r"orders|purchases"
     products_pattern = r"products|items|goods"
     customers_pattern = r"customers|buyers|clients"
+    geo_pattern = r"geo|geograph|location|country|region|city"
+    conversion_pattern = r"conversion|visit|session"
     
     # Determine time range
     time_range = "last_7_days"  # Default to last 7 days instead of today
+    specific_start_date = None
+    specific_end_date = None
+    
+    # Check for custom date range
+    custom_match = re.search(custom_date_pattern, text, re.IGNORECASE)
+    if custom_match:
+        start_date_str, end_date_str = custom_match.groups()
+        # Parse the dates
+        try:
+            # Try different formats
+            for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"]:
+                try:
+                    specific_start_date = datetime.strptime(start_date_str, fmt)
+                    specific_end_date = datetime.strptime(end_date_str, fmt)
+                    time_range = "custom"
+                    logger.info(f"Detected custom date range: {specific_start_date} to {specific_end_date}")
+                    break
+                except ValueError:
+                    continue
+        except Exception as e:
+            logger.error(f"Error parsing custom date range: {e}")
+            # Fall back to default time range
     
     # Check for specific month patterns first (most specific)
-    if re.search(last_specific_month_pattern, text, re.IGNORECASE):
+    elif re.search(last_specific_month_pattern, text, re.IGNORECASE):
         # Extract the month name
         match = re.search(last_specific_month_pattern, text, re.IGNORECASE)
         month_text = match.group(1).lower()
@@ -264,19 +291,37 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
         primary_metric = "products"
     elif re.search(customers_pattern, text, re.IGNORECASE):
         primary_metric = "customers"
+    elif re.search(geo_pattern, text, re.IGNORECASE):
+        primary_metric = "geo"
+    elif re.search(conversion_pattern, text, re.IGNORECASE):
+        primary_metric = "conversion"
     
     # Determine if user is asking for top products
     top_products = any(phrase in text.lower() for phrase in ["top products", "best selling", "best-selling", "best seliing"])
     
+    # Determine if user is asking for bottom products
+    bottom_products = any(phrase in text.lower() for phrase in ["bottom products", "worst selling", "worst-selling", "worst seliing", "least popular"])
+    
+    # Determine if user wants geo data
+    include_geo = "geo" in primary_metric or any(phrase in text.lower() for phrase in ["geographic", "location", "country", "region", "city", "where"])
+    
+    # Determine if user wants conversion data
+    include_conversion = "conversion" in primary_metric or any(phrase in text.lower() for phrase in ["conversion rate", "session", "visit", "visitor"])
+    
     # Determine if user is asking for a comparison
     comparison = "compare" in text.lower() or "versus" in text.lower() or " vs " in text.lower()
     
-    logger.info(f"Extracted intent: time_range={time_range}, metric={primary_metric}, top_products={top_products}")
+    logger.info(f"Extracted intent: time_range={time_range}, metric={primary_metric}, top_products={top_products}, bottom_products={bottom_products}, geo={include_geo}, conversion={include_conversion}")
     
     return {
         "time_range": time_range,
         "primary_metric": primary_metric,
         "top_products": top_products,
+        "bottom_products": bottom_products,
+        "include_geo_data": include_geo,
+        "include_conversion_rate": include_conversion,
         "comparison": comparison,
+        "specific_start_date": specific_start_date,
+        "specific_end_date": specific_end_date,
         "raw_query": text
     }
