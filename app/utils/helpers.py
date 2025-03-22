@@ -171,8 +171,6 @@ def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
     
     # Convert to UTC
     return start_date.astimezone(pytz.UTC), end_date.astimezone(pytz.UTC)
-
-
 def extract_query_intent(text: str) -> Dict[str, Any]:
     """
     Extract the intent and parameters from a user query.
@@ -187,7 +185,8 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
     today_pattern = r"today|today's"
     yesterday_pattern = r"yesterday|yesterday's"
     week_pattern = r"this week|last 7 days|past week|weekly"
-    month_pattern = r"this month|last 30 days|past month|monthly"
+    month_pattern = r"this month|current month"  # Fixed: Separated "this month" from "last 30 days"
+    last_30_days_pattern = r"last 30 days|past month|past 30 days"
     
     # Add patterns for specific months
     month_names = ["january", "february", "march", "april", "may", "june", 
@@ -214,7 +213,7 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
     conversion_pattern = r"conversion|convert|abandonment|checkout"
     
     # Determine time range
-    time_range = "last_7_days"  # Default to last 7 days instead of today
+    time_range = "last_7_days"  # Default to last 7 days
     
     # Check for specific month patterns first (most specific)
     if re.search(last_specific_month_pattern, text, re.IGNORECASE):
@@ -252,6 +251,12 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
             time_range = f"specific_month_{year}_{month_num:02d}"
             logger.info(f"Detected month name: {month_text} -> {time_range}")
     
+    # Handle "this month" specifically - map to current calendar month
+    elif re.search(month_pattern, text, re.IGNORECASE):
+        now = datetime.now()
+        time_range = f"specific_month_{now.year}_{now.month:02d}"
+        logger.info(f"Detected 'this month' request -> {time_range}")
+    
     # Standard time ranges
     elif re.search(today_pattern, text, re.IGNORECASE):
         time_range = "today"
@@ -259,7 +264,7 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
         time_range = "yesterday"
     elif re.search(week_pattern, text, re.IGNORECASE):
         time_range = "last_7_days"
-    elif re.search(month_pattern, text, re.IGNORECASE):
+    elif re.search(last_30_days_pattern, text, re.IGNORECASE):
         time_range = "last_30_days"
     
     # Determine primary metric
@@ -276,10 +281,10 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
         primary_metric = "conversion"
     
     # Determine if user is asking for top products
-    top_products = any(phrase in text.lower() for phrase in ["top products", "best selling", "best-selling", "best seliing"])
+    top_products = any(phrase in text.lower() for phrase in ["top products", "best selling", "best-selling", "best seliing", "top 5", "top five", "top ten", "top 10"])
     
     # Determine if user is asking for bottom products
-    bottom_products = any(phrase in text.lower() for phrase in ["worst selling", "lowest", "worst-selling", "poorest performing"])
+    bottom_products = any(phrase in text.lower() for phrase in ["worst selling", "lowest", "worst-selling", "poorest performing", "bottom 5", "bottom five"])
     
     # Determine if user is asking for geographic data
     include_geo_data = re.search(geo_pattern, text, re.IGNORECASE) is not None or "where" in text.lower()

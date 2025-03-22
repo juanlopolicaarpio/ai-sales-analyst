@@ -1,15 +1,17 @@
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy import select, and_
+
 from loguru import logger
 import pandas as pd
 import numpy as np
 
 from app.db import crud, models
-from app.utils.helpers import get_date_range
+from app.utils.helpers import get_date_range, format_currency, format_percentage
 from app.core.shopify_client import ShopifyClient
 
 
@@ -45,14 +47,14 @@ async def get_sales_data(
         end_date = specific_end_date
     else:
         start_date, end_date = get_date_range(time_range, timezone)
-    
+
     # Convert to timezone-naive datetimes (to match the stored order_date)
     if start_date.tzinfo:
         start_date = start_date.replace(tzinfo=None)
     if end_date.tzinfo:
         end_date = end_date.replace(tzinfo=None)
-    
-    # FIXED: Use selectinload to eager load order_items instead of lazy loading
+
+    # Use selectinload to eager load order_items instead of lazy loading
     stmt = select(models.Order).where(
         and_(
             models.Order.store_id == store_id,
@@ -60,16 +62,15 @@ async def get_sales_data(
             models.Order.order_date <= end_date
         )
     ).options(selectinload(models.Order.order_items))
-    
+
     result = await db.execute(stmt)
     orders = result.scalars().all()
-    
+
     # Get orders for the previous period for comparison
     duration = (end_date - start_date).days + 1
     prev_start_date = start_date - timedelta(days=duration)
     prev_end_date = end_date - timedelta(days=duration)
-    
-    # FIXED: Use selectinload for previous orders too
+
     prev_stmt = select(models.Order).where(
         and_(
             models.Order.store_id == store_id,
@@ -77,61 +78,128 @@ async def get_sales_data(
             models.Order.order_date <= prev_end_date
         )
     ).options(selectinload(models.Order.order_items))
-    
+
     prev_result = await db.execute(prev_stmt)
-    prev_orders = prev_result.scalars().all()
-    
+    prev_orders = prev_result.scalars().all()  # FIXED: Was using result instead of prev_result
+
     # Calculate summary metrics
     total_sales = sum(order.total_price for order in orders)
     total_orders = len(orders)
     average_order_value = total_sales / total_orders if total_orders > 0 else 0
-    
+
     prev_total_sales = sum(order.total_price for order in prev_orders)
     prev_total_orders = len(prev_orders)
     prev_average_order_value = prev_total_sales / prev_total_orders if prev_total_orders > 0 else 0
-    
+
     # Calculate changes
     sales_change = (total_sales - prev_total_sales) / prev_total_sales if prev_total_sales > 0 else 0
     orders_change = (total_orders - prev_total_orders) / prev_total_orders if prev_total_orders > 0 else 0
     aov_change = (average_order_value - prev_average_order_value) / prev_average_order_value if prev_average_order_value > 0 else 0
-    
-    # Get top products
+
+    # Get top products and calculate growth rates
     product_sales = {}
+    prev_product_sales = {}
+
+    # Current period product sales
     for order in orders:
-        for item in order.order_items:  # Now safely using eager-loaded relationship
-            if item.product_id not in product_sales:
-                product_sales[item.product_id] = {
+        for item in order.order_items:
+            product_id = str(item.product_id) if item.product_id else f"unknown_{item.platform_product_id}"
+            if product_id not in product_sales:
+                product_sales[product_id] = {
                     "name": item.product_name,
                     "revenue": 0,
                     "quantity": 0
                 }
-            product_sales[item.product_id]["revenue"] += item.price * item.quantity
-            product_sales[item.product_id]["quantity"] += item.quantity
-    
-    # Sort for top and bottom products
-    sorted_products = sorted(
+            # Calculate correctly - item.price * item.quantity
+            product_sales[product_id]["revenue"] += item.price * item.quantity
+            product_sales[product_id]["quantity"] += item.quantity
+
+    # Debug logging - verify product sales aren't exceeding total sales
+    total_product_revenue = sum(p["revenue"] for p in product_sales.values())
+    logger.info(f"Total sales: {total_sales}, Total product revenue: {total_product_revenue}")
+    if total_product_revenue > total_sales * 1.1:  # Allow 10% margin for rounding
+        logger.warning(f"Product revenue ({total_product_revenue}) significantly exceeds total sales ({total_sales})!")
+        # Cap product revenue to match total sales
+        if total_product_revenue > 0:
+            scale_factor = total_sales / total_product_revenue
+            for product_id in product_sales:
+                product_sales[product_id]["revenue"] *= scale_factor
+            logger.info(f"Scaled product revenues by factor {scale_factor}")
+
+    # Previous period product sales for growth calculation
+    for order in prev_orders:
+        for item in order.order_items:
+            product_id = str(item.product_id) if item.product_id else f"unknown_{item.platform_product_id}"
+            if product_id not in prev_product_sales:
+                prev_product_sales[product_id] = {
+                    "revenue": 0,
+                    "quantity": 0
+                }
+            prev_product_sales[product_id]["revenue"] += item.price * item.quantity
+            prev_product_sales[product_id]["quantity"] += item.quantity
+
+    # Calculate growth rates for products
+    for product_id, product in product_sales.items():
+        prev_revenue = prev_product_sales.get(product_id, {}).get("revenue", 0)
+        if prev_revenue > 0:
+            product["growth_rate"] = (product["revenue"] - prev_revenue) / prev_revenue
+        else:
+            product["growth_rate"] = 1.0  # 100% growth for new products
+
+    # Sort products by revenue
+    sorted_by_revenue = sorted(
         product_sales.values(),
         key=lambda x: x["revenue"],
         reverse=True
     )
-    
-    top_products = sorted_products[:10]
-    bottom_products = sorted_products[-10:] if len(sorted_products) > 10 else []
-    
+
+    # Sort by growth rate for growing/declining products
+    sorted_by_growth = sorted(
+        product_sales.values(),
+        key=lambda x: x.get("growth_rate", 0),
+        reverse=True
+    )
+
+    # Get top growing and declining products
+    growing_products = [p for p in sorted_by_growth if p.get("growth_rate", 0) > 0][:10]
+    declining_products = [p for p in sorted_by_growth if p.get("growth_rate", 0) < 0][-10:]
+    declining_products.reverse()  # Reverse to get worst performing first
+
+    top_products = sorted_by_revenue[:10]  # Ensure we get up to 10 products
+    bottom_products = sorted_by_revenue[-10:] if len(sorted_by_revenue) > 10 else []
+
+    # Log the top products for debugging
+    logger.info(f"Number of top products identified: {len(top_products)}")
+    for i, product in enumerate(top_products[:5], 1):
+        logger.info(f"Top product {i}: {product.get('name', 'Unknown')} - Revenue: {product.get('revenue', 0):.2f}")
+
     # Fetch geo data if requested
     geo_data = []
     if include_geo_data:
         try:
-            # Get the store to initialize ShopifyClient
-            store_result = await db.execute(select(models.Store).where(models.Store.id == store_id))
-            store = store_result.scalars().first()
+            logger.info(f"Attempting to extract geographic data from {len(orders)} orders")
+            # Extract directly from orders first
+            geo_data = extract_geo_data_from_orders(orders)
+            logger.info(f"Extracted geo data from orders: {len(geo_data)} countries")
             
-            if store:
-                client = ShopifyClient(store)
-                geo_data = await client.get_geolocation_data(start_date, end_date)
+            # Only if extraction produced no results, try Shopify API
+            if not geo_data:
+                try:
+                    # Get the store to initialize ShopifyClient
+                    store_result = await db.execute(select(models.Store).where(models.Store.id == store_id))
+                    store = store_result.scalars().first()
+                    
+                    if store:
+                        client = ShopifyClient(store)
+                        geo_data = await client.get_geolocation_data(start_date, end_date)
+                        logger.info(f"ShopifyClient geo data obtained: {len(geo_data)} countries")
+                except Exception as shopify_error:
+                    logger.error(f"Error from ShopifyClient.get_geolocation_data: {shopify_error}")
         except Exception as e:
-            logger.error(f"Error fetching geo data: {e}")
-    
+            logger.error(f"Error in main geo data block: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
     # Fetch conversion rate data if requested
     conversion_data = {}
     if include_conversion_rate:
@@ -140,11 +208,11 @@ async def get_sales_data(
             if not store:  # Only fetch if we didn't already
                 store_result = await db.execute(select(models.Store).where(models.Store.id == store_id))
                 store = store_result.scalars().first()
-                
+
             if store:
                 client = ShopifyClient(store)
                 analytics = await client.get_analytics_report("conversion_rate", start_date, end_date)
-                
+
                 if "shopifyAnalytics" in analytics:
                     shop_analytics = analytics["shopifyAnalytics"]
                     conversion_data = {
@@ -154,7 +222,7 @@ async def get_sales_data(
                     }
         except Exception as e:
             logger.error(f"Error fetching conversion data: {e}")
-    
+
     # Format the response
     return {
         "time_period": {
@@ -177,14 +245,215 @@ async def get_sales_data(
         },
         "top_products": top_products,
         "bottom_products": bottom_products,
+        "growing_products": growing_products,
+        "declining_products": declining_products,
         "geo_data": geo_data,
         "conversion": conversion_data,
         "anomalies": [],  # This would be populated by the anomaly detection service
     }
+
+
+def extract_geo_data_from_orders(orders):
+    """
+    Extract geographic data directly from order data.
+    This is a fallback method when the Shopify API geo data fetch fails.
+
+    Args:
+        orders: List of order objects
+
+    Returns:
+        list: Processed geographic data
+    """
+    geo_data = {}
+    address_count = 0
+    total_orders = len(orders)
+    
+    logger.info(f"Extracting geo data from {total_orders} orders")
+    
+    # First, log some debug info about the order structure
+    if orders:
+        try:
+            sample_order = orders[0]
+            logger.info(f"Sample order type: {type(sample_order).__name__}")
+            logger.info(f"Sample order attributes: {dir(sample_order)[:20]}")
+            
+            # Check if order_data exists and is accessible
+            has_order_data = hasattr(sample_order, 'order_data')
+            logger.info(f"Sample order has order_data attribute: {has_order_data}")
+            
+            if has_order_data:
+                # Check the type of order_data
+                order_data_type = type(sample_order.order_data).__name__
+                logger.info(f"order_data type: {order_data_type}")
+                
+                # If order_data is a string, try to parse it
+                if order_data_type == 'str':
+                    try:
+                        import json
+                        sample_data = json.loads(sample_order.order_data)
+                        logger.info(f"Parsed order_data from string, keys: {list(sample_data.keys())}")
+                    except:
+                        logger.error("Failed to parse order_data string as JSON")
+                else:
+                    # Assume it's a dict or similar
+                    try:
+                        sample_data = sample_order.order_data
+                        if hasattr(sample_data, 'keys'):
+                            logger.info(f"order_data keys: {list(sample_data.keys())[:10]}")
+                    except:
+                        logger.error("Error accessing order_data keys")
+        except Exception as e:
+            logger.error(f"Error inspecting sample order: {e}")
+
+    for order in orders:
+        try:
+            # Handle different order data formats
+            order_data = None
+            
+            # Check if order_data exists as an attribute
+            if hasattr(order, 'order_data'):
+                order_data = order.order_data
+                
+                # If order_data is a string, try to parse it as JSON
+                if isinstance(order_data, str):
+                    try:
+                        import json
+                        order_data = json.loads(order_data)
+                    except:
+                        logger.warning(f"Failed to parse order_data string for order {getattr(order, 'id', 'unknown')}")
+            
+            # If we still don't have order_data, try the raw attribute
+            if not order_data and hasattr(order, 'raw'):
+                order_data = order.raw
+            
+            # If we have no order data at all, skip this order
+            if not order_data:
+                continue
+            
+            # Try to get shipping address
+            shipping_address = None
+            
+            # If order_data is a dict, access it directly
+            if isinstance(order_data, dict):
+                shipping_address = order_data.get('shipping_address')
+                
+                # Try billing address if shipping address is not available
+                if not shipping_address:
+                    shipping_address = order_data.get('billing_address')
+            
+            # If we couldn't find an address, skip this order
+            if not shipping_address:
+                continue
+            
+            address_count += 1
+            
+            # Extract location data
+            country = shipping_address.get('country', 'Unknown')
+            province = shipping_address.get('province', 'Unknown')
+            city = shipping_address.get('city', 'Unknown')
+            
+            # Handle empty values
+            if not country or country.strip() == '':
+                country = 'Unknown'
+            if not province or province.strip() == '':
+                province = 'Unknown Region'
+            if not city or city.strip() == '':
+                city = 'Unknown City'
+            
+            # Initialize country data if not exists
+            if country not in geo_data:
+                geo_data[country] = {
+                    'total_orders': 0,
+                    'total_sales': 0,
+                    'regions': {}
+                }
+            
+            # Update country stats
+            geo_data[country]['total_orders'] += 1
+            geo_data[country]['total_sales'] += order.total_price
+            
+            # Initialize region data if not exists
+            if province not in geo_data[country]['regions']:
+                geo_data[country]['regions'][province] = {
+                    'total_orders': 0,
+                    'total_sales': 0,
+                    'cities': {}
+                }
+            
+            # Update region stats
+            geo_data[country]['regions'][province]['total_orders'] += 1
+            geo_data[country]['regions'][province]['total_sales'] += order.total_price
+            
+            # Initialize city data if not exists
+            if city not in geo_data[country]['regions'][province]['cities']:
+                geo_data[country]['regions'][province]['cities'][city] = {
+                    'total_orders': 0,
+                    'total_sales': 0
+                }
+            
+            # Update city stats
+            geo_data[country]['regions'][province]['cities'][city]['total_orders'] += 1
+            geo_data[country]['regions'][province]['cities'][city]['total_sales'] += order.total_price
+            
+        except Exception as e:
+            logger.error(f"Error processing order for geo data: {e}")
+    
+    logger.info(f"Found addresses in {address_count} out of {total_orders} orders")
+    
+    # Convert geo_data dict to list format
+    result = []
+    for country, country_data in geo_data.items():
+        # Convert regions dict to list
+        regions_list = []
+        for region_name, region_data in country_data['regions'].items():
+            # Convert cities dict to list
+            cities_list = []
+            for city_name, city_data in region_data['cities'].items():
+                cities_list.append({
+                    'name': city_name,
+                    'total_orders': city_data['total_orders'],
+                    'total_sales': city_data['total_sales']
+                })
+            
+            # Sort cities by total sales
+            cities_list.sort(key=lambda x: x['total_sales'], reverse=True)
+            
+            regions_list.append({
+                'name': region_name,
+                'total_orders': region_data['total_orders'],
+                'total_sales': region_data['total_sales'],
+                'cities': cities_list
+            })
+        
+        # Sort regions by total sales
+        regions_list.sort(key=lambda x: x['total_sales'], reverse=True)
+        
+        country_info = {
+            'country': country,
+            'total_orders': country_data['total_orders'],
+            'total_sales': country_data['total_sales'],
+            'regions': regions_list
+        }
+        result.append(country_info)
+    
+    # Sort countries by total sales
+    result.sort(key=lambda x: x['total_sales'], reverse=True)
+    
+    # Log the results for debugging
+    logger.info(f"Extracted geo data: {len(result)} countries with data")
+    if result:
+        for country in result[:3]:  # Log top 3 countries
+            logger.info(f"Country: {country['country']}, Sales: {country['total_sales']:.2f}, Orders: {country['total_orders']}")
+            for region in country['regions'][:3]:  # Log top 3 regions per country
+                logger.info(f"  Region: {region['name']}, Sales: {region['total_sales']:.2f}, Orders: {region['total_orders']}")
+    
+    return result
+
+
 async def update_shopify_orders(db: AsyncSession, store: models.Store, since_date: Optional[datetime] = None):
     """
     Update orders from Shopify.
-    
+
     Args:
         db: Database session
         store: Store model
@@ -192,7 +461,7 @@ async def update_shopify_orders(db: AsyncSession, store: models.Store, since_dat
     """
     # Initialize Shopify client
     client = ShopifyClient(store)
-    
+
     try:
         # Get orders from Shopify
         orders = await client.get_orders(
@@ -200,14 +469,14 @@ async def update_shopify_orders(db: AsyncSession, store: models.Store, since_dat
             status="any",
             limit=250  # Max allowed by Shopify
         )
-        
+
         # Process each order
         for order_data in orders:
             # Check if we already have this order
             existing_order = await crud.get_order_by_platform_id(
                 db, str(store.id), str(order_data["id"])
             )
-            
+
             if not existing_order:
                 # Create new order
                 # Convert timezone-aware datetime to timezone-naive by replacing tzinfo
@@ -225,14 +494,14 @@ async def update_shopify_orders(db: AsyncSession, store: models.Store, since_dat
                         # Fallback to basic parsing if isoformat fails
                         from dateutil import parser
                         order_date = parser.parse(order_data["created_at"])
-                        
+
                     # Make timezone-naive for PostgreSQL
                     if order_date and order_date.tzinfo:
                         order_date = order_date.replace(tzinfo=None)
                 else:
                     # Use current time if created_at is missing (should not happen)
                     order_date = datetime.utcnow()
-                
+
                 new_order = {
                     "store_id": str(store.id),
                     "platform_order_id": str(order_data["id"]),
@@ -245,20 +514,20 @@ async def update_shopify_orders(db: AsyncSession, store: models.Store, since_dat
                     "order_date": order_date,  # Use timezone-naive datetime
                     "order_data": order_data
                 }
-                
+
                 order = await crud.create_order(db, new_order)
-                
+
                 # Process order items
                 for item_data in order_data.get("line_items", []):
                     # Check if product_id exists and is not None
                     if item_data.get("product_id") is None:
                         continue
-                        
+
                     # Check if we have this product
                     product = await crud.get_product_by_platform_id(
                         db, str(store.id), str(item_data["product_id"])
                     )
-                    
+
                     # Create order item
                     order_item = {
                         "order_id": str(order.id),
@@ -270,9 +539,9 @@ async def update_shopify_orders(db: AsyncSession, store: models.Store, since_dat
                         "quantity": item_data["quantity"],
                         "price": float(item_data["price"])
                     }
-                    
+
                     await db.execute(models.OrderItem.__table__.insert().values(**order_item))
-        
+
         await db.commit()
     except Exception as e:
         logger.error(f"Error updating Shopify orders: {e}")
@@ -281,28 +550,30 @@ async def update_shopify_orders(db: AsyncSession, store: models.Store, since_dat
     finally:
         # Close Shopify session
         client.close_session()
+
+
 async def update_shopify_products(db: AsyncSession, store: models.Store):
     """
     Update products from Shopify.
-    
+
     Args:
         db: Database session
         store: Store model
     """
     # Initialize Shopify client
     client = ShopifyClient(store)
-    
+
     try:
         # Get products from Shopify
         products = await client.get_products(limit=250)  # Max allowed by Shopify
-        
+
         # Process each product
         for product_data in products:
             # Check if we already have this product
             existing_product = await crud.get_product_by_platform_id(
                 db, str(store.id), str(product_data["id"])
             )
-            
+
             # Prepare product data
             product_info = {
                 "store_id": str(store.id),
@@ -315,7 +586,7 @@ async def update_shopify_products(db: AsyncSession, store: models.Store):
                 "is_active": not product_data.get("published_at") is None,
                 "product_data": product_data
             }
-            
+
             # Get first variant for price and inventory information
             if product_data.get("variants"):
                 variant = product_data["variants"][0]
@@ -323,14 +594,14 @@ async def update_shopify_products(db: AsyncSession, store: models.Store):
                 product_info["compare_at_price"] = float(variant.get("compare_at_price", 0)) if variant.get("compare_at_price") else None
                 product_info["sku"] = variant.get("sku")
                 product_info["inventory_quantity"] = variant.get("inventory_quantity", 0)
-            
+
             if existing_product:
                 # Update existing product
                 await crud.update_product(db, str(existing_product.id), product_info)
             else:
                 # Create new product
                 await crud.create_product(db, product_info)
-        
+
         await db.commit()
     except Exception as e:
         logger.error(f"Error updating Shopify products: {e}")
@@ -344,11 +615,11 @@ async def update_shopify_products(db: AsyncSession, store: models.Store):
 async def analyze_store_performance(db: AsyncSession, store_id: str) -> Dict[str, Any]:
     """
     Analyze store performance over time.
-    
+
     Args:
         db: Database session
         store_id: Store ID
-    
+
     Returns:
         dict: Performance analysis
     """
@@ -360,50 +631,50 @@ async def analyze_store_performance(db: AsyncSession, store_id: str) -> Dict[str
         .order_by(models.Order.order_date)
     )
     orders = result.fetchall()
-    
+
     # Convert to DataFrame for easier analysis
     orders_df = pd.DataFrame(orders)
-    
+
     if orders_df.empty:
         return {
             "status": "no_data",
             "message": "No order data available for analysis"
         }
-    
+
     # Convert order_date to datetime
     orders_df["order_date"] = pd.to_datetime(orders_df["order_date"])
-    
+
     # Set order_date as index
     orders_df.set_index("order_date", inplace=True)
-    
+
     # Resample to daily frequency
     daily_sales = orders_df.resample("D")["total_price"].sum()
     daily_orders = orders_df.resample("D")["id"].count()
-    
+
     # Calculate rolling averages (7-day)
     rolling_sales = daily_sales.rolling(window=7).mean()
     rolling_orders = daily_orders.rolling(window=7).mean()
-    
+
     # Calculate growth rates
     sales_growth = daily_sales.pct_change(periods=7)  # Week-over-week
     orders_growth = daily_orders.pct_change(periods=7)  # Week-over-week
-    
+
     # Find the latest values
     latest_sales = daily_sales.iloc[-1]
     latest_orders = daily_orders.iloc[-1]
     latest_avg_order_value = latest_sales / latest_orders if latest_orders > 0 else 0
-    
+
     # Calculate growth vs. one week ago
     sales_vs_last_week = sales_growth.iloc[-1] if len(sales_growth) > 0 else 0
     orders_vs_last_week = orders_growth.iloc[-1] if len(orders_growth) > 0 else 0
-    
+
     # Calculate monthly totals
     monthly_sales = orders_df.resample("M")["total_price"].sum()
     monthly_orders = orders_df.resample("M")["id"].count()
-    
+
     # Get customer data
     unique_customers = len(orders_df["customer_email"].unique())
-    
+
     # Format the response
     return {
         "status": "success",

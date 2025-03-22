@@ -21,21 +21,39 @@ class SalesAnalystAgent:
     AI agent for analyzing sales data and responding to user queries.
     """
     
+class SalesAnalystAgent:
+    """
+    AI agent for analyzing sales data and responding to user queries.
+    """
+    
     def __init__(self):
         """Initialize the AI agent with necessary components."""
         self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
         self.system_prompt = """
 You are an expert e-commerce Sales Analyst AI assistant that helps online store owners understand their sales data.
 Your goal is to provide clear, concise, and actionable insights based on their sales data.
-In addition, please consider any additional metrics or comparisons specified in the query intent.
-Guidelines:
-- Be concise but informative.
-- Highlight the most important trends and insights.
-- Use a friendly, professional tone.
-- Provide specific numbers and percentages when available.
-- End with actionable recommendations when appropriate.
-- If you don't have enough information, ask clarifying questions.
-- Format currency values and percentages consistently.
+
+RULES:
+- NEVER use placeholder names like "Region A", "Region B", "Product X", "Product Y". Always use actual region/product names.
+- NEVER report on data that is not provided to you, especially for regions or products.
+- NEVER provide analyses where data is missing - instead explicitly acknowledge what data is missing.
+- ONLY use the numerical data provided to you - don't fabricate numbers.
+- Be precise with currency formatting (always use $x,xxx.xx format for US dollars).
+- Use consistent decimal precision for percentages (always show 2 decimal places).
+- If a query asks about "this month", it specifically means the current calendar month, not the last 30 days.
+
+RESPONSE FORMAT:
+1. Start with a very brief, 1-sentence summary of the key insight
+2. Provide relevant metrics with specific numbers and time period
+3. If available, include comparative data (vs previous period)
+4. For top products/regions, list actual names with specific values
+5. End with 2-3 concise, actionable recommendations 
+
+TONE:
+- Professional but conversational
+- Confident in your analysis of available data
+- Transparent about missing or unavailable data
+- Focused on business impact rather than technical details
 """
         # Initialize LangChain components
         self.llm = ChatOpenAI(
@@ -67,8 +85,8 @@ Guidelines:
         )
     
     def _format_currency(self, amount: float) -> str:
-        """Format a number as Philippine pesos."""
-        return f"₱{float(amount):,.2f}"
+        """Format a number as currency."""
+        return f"${float(amount):,.2f}"
     
     async def analyze_query(
         self, 
@@ -107,10 +125,25 @@ Here is context about the user and their store:
             
             # Add sales data if available
             if sales_data:
+                # Check if the requested data is available
+                has_geo_data = sales_data.get("geo_data") and len(sales_data.get("geo_data", [])) > 0
+                has_growing_products = sales_data.get("growing_products") and len(sales_data.get("growing_products", [])) > 0
+                has_declining_products = sales_data.get("declining_products") and len(sales_data.get("declining_products", [])) > 0
+                
+                # Add specific data availability notes to help the AI generate better responses
+                data_availability = f"""
+Data Availability Notes:
+- Geographic data: {'Available' if has_geo_data else 'Not available'}
+- Growing products data: {'Available' if has_growing_products else 'Not available'}
+- Declining products data: {'Available' if has_declining_products else 'Not available'}
+"""
+                context_prompt += data_availability
+                
                 # Determine top products limit from intent if provided, defaulting to 5
                 top_limit = 5
                 if intent and isinstance(intent.get("top_products"), int):
                     top_limit = intent["top_products"]
+                    
                 sales_context = self._format_sales_data(sales_data, top_products_limit=top_limit)
                 context_prompt += f"\n\nHere is the relevant sales data:\n{sales_context}"
                 
@@ -181,10 +214,30 @@ Here is context about the user and their store:
             formatted_text += f"- Orders Change: {format_percentage(comparison.get('orders_change', 0))} ({comparison.get('previous_orders', 0)} previously)\n"
             formatted_text += f"- AOV Change: {format_percentage(comparison.get('aov_change', 0))} ({format_currency(comparison.get('previous_aov', 0))} previously)\n"
         
+        # Add growing products if available
+        growing_products = sales_data.get("growing_products", [])
+        if growing_products:
+            formatted_text += "\nFASTEST GROWING PRODUCTS:\n"
+            for i, product in enumerate(growing_products[:top_products_limit], 1):
+                quantity = product.get("quantity", 0)
+                revenue = product.get("revenue", 0)
+                growth_rate = product.get("growth_rate", 0)
+                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} (Growth Rate: {format_percentage(growth_rate)}, {quantity} units sold)\n"
+        
+        # Add declining products if available
+        declining_products = sales_data.get("declining_products", [])
+        if declining_products:
+            formatted_text += "\nDECLINING PRODUCTS:\n"
+            for i, product in enumerate(declining_products[:top_products_limit], 1):
+                quantity = product.get("quantity", 0)
+                revenue = product.get("revenue", 0)
+                growth_rate = product.get("growth_rate", 0)
+                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} (Decline Rate: {format_percentage(growth_rate)}, {quantity} units sold)\n"
+        
         # Add top products if available
         top_products = sales_data.get("top_products", [])
         if top_products:
-            formatted_text += "\nTOP PRODUCTS:\n"
+            formatted_text += "\nTOP PRODUCTS BY REVENUE:\n"
             for i, product in enumerate(top_products[:top_products_limit], 1):
                 quantity = product.get("quantity") or product.get("units_sold") or 0
                 revenue = product.get("revenue", 0)
@@ -194,7 +247,7 @@ Here is context about the user and their store:
         # Add bottom products if available
         bottom_products = sales_data.get("bottom_products", [])
         if bottom_products:
-            formatted_text += "\nBOTTOM PRODUCTS:\n"
+            formatted_text += "\nBOTTOM PRODUCTS BY REVENUE:\n"
             for i, product in enumerate(bottom_products[:top_products_limit], 1):
                 formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(product.get('revenue', 0))} ({product.get('quantity', 0)} units)\n"
         
@@ -202,13 +255,13 @@ Here is context about the user and their store:
         geo_data = sales_data.get("geo_data", [])
         if geo_data:
             formatted_text += "\nGEOGRAPHIC DISTRIBUTION:\n"
-            for i, country in enumerate(geo_data[:3], 1):  # Limit to top 3 countries
+            for i, country in enumerate(geo_data[:5], 1):  # Show top 5 countries
                 formatted_text += f"{i}. {country.get('country', 'Unknown')}: {format_currency(country.get('total_sales', 0))} ({country.get('total_orders', 0)} orders)\n"
-                # Add top region for each country
+                # Add top regions for each country
                 regions = country.get("regions", [])
-                if regions:
-                    top_region = regions[0]
-                    formatted_text += f"   - Top region: {top_region.get('name', 'Unknown')}: {format_currency(top_region.get('total_sales', 0))} ({top_region.get('total_orders', 0)} orders)\n"
+                sorted_regions = sorted(regions, key=lambda r: r.get('total_sales', 0), reverse=True)
+                for j, region in enumerate(sorted_regions[:3], 1):  # Show top 3 regions per country
+                    formatted_text += f"   {i}.{j} {region.get('name', 'Unknown')}: {format_currency(region.get('total_sales', 0))} ({region.get('total_orders', 0)} orders)\n"
         
         # Add anomalies if available
         anomalies = sales_data.get("anomalies", [])
@@ -219,6 +272,16 @@ Here is context about the user and their store:
         
         return formatted_text
     
+    def clear_memory(self, conversation_id: str = None):
+        """
+        Clear the conversation memory.
+        
+        Args:
+            conversation_id: Conversation ID to clear (if None, clears all memory)
+        """
+        # Simply reset the memory buffer
+        self.memory.clear()
+        logger.info(f"Cleared conversation memory for {conversation_id or 'all conversations'}")    
     async def generate_daily_summary(self, sales_data: Dict[str, Any], store_name: str) -> str:
         """
         Generate a daily sales summary.
