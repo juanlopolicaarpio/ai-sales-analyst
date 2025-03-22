@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.core.agent import sales_analyst_agent
 from app.db import crud
-from app.db.models import User, Store, UserPreference
+from app.db.models import User, Store, UserPreference, Message
 from app.utils.helpers import extract_query_intent
 from app.services.analytics import get_sales_data
 
@@ -38,15 +38,19 @@ class MessageProcessor:
         """
         # Find the user based on the channel and identifier
         user = None
+        conversation_id = None
         try:
             if channel == "slack" and "slack_id" in user_identifier:
                 user = await crud.get_user_by_slack_id(db, user_identifier["slack_id"])
+                conversation_id = f"slack_{user_identifier['slack_id']}"
                 logger.debug(f"Looking up user by slack_id: {user_identifier['slack_id']}")
             elif channel == "whatsapp" and "whatsapp_number" in user_identifier:
                 user = await crud.get_user_by_whatsapp(db, user_identifier["whatsapp_number"])
+                conversation_id = f"whatsapp_{user_identifier['whatsapp_number']}"
                 logger.debug(f"Looking up user by whatsapp_number: {user_identifier['whatsapp_number']}")
             elif (channel == "email" or channel == "test") and "email" in user_identifier:
                 user = await crud.get_user_by_email(db, user_identifier["email"])
+                conversation_id = f"email_{user_identifier['email']}"
                 logger.debug(f"Looking up user by email: {user_identifier['email']}")
             
             if not user:
@@ -77,7 +81,7 @@ class MessageProcessor:
                 "channel": channel,
                 "direction": "incoming",
                 "content": message_text,
-                "message_metadata": user_identifier  # Fixed field name from metadata to message_metadata
+                "message_metadata": user_identifier
             })
             logger.debug("Logged incoming message successfully")
         except Exception as e:
@@ -105,16 +109,11 @@ class MessageProcessor:
         except Exception as e:
             logger.error(f"Error extracting intent: {e}")
             intent = {
-            "time_range": "last_7_days",
-            "primary_metric": "sales",
-            "top_products": any(phrase in message_text.lower() for phrase in ["top products", "best selling"]),
-            "bottom_products": any(phrase in message_text.lower() for phrase in ["bottom products", "worst selling"]),
-            "include_geo_data": False,
-            "include_conversion_rate": False,
-            "comparison": False,
-            "specific_start_date": None,
-            "specific_end_date": None,
-            "raw_query": message_text
+                "time_range": "last_7_days",
+                "primary_metric": "sales",
+                "top_products": any(phrase in message_text.lower() for phrase in ["top products", "best selling"]),
+                "comparison": False,
+                "raw_query": message_text
             }
             logger.info(f"Using fallback intent: {intent}")
         
@@ -129,18 +128,16 @@ class MessageProcessor:
         # Get relevant sales data based on the intent
         sales_data = None
         try:
+            # Check if we need geographic data
+            include_geo = intent.get("include_geo_data", False) or "region" in message_text.lower() or "country" in message_text.lower()
+            
             # Always try to get sales data regardless of keywords
             logger.info(f"Fetching sales data for time range: {intent['time_range']}")
             sales_data = await get_sales_data(
                 db, 
                 str(store.id), 
                 intent["time_range"],
-                user_context["timezone"],
-                include_geo_data=intent.get("include_geo_data", False),
-                include_conversion_rate=intent.get("include_conversion_rate", False),
-                specific_start_date=intent.get("specific_start_date"),
-                specific_end_date=intent.get("specific_end_date")
-        
+                user_context["timezone"]
             )
             
             if sales_data:
@@ -148,12 +145,14 @@ class MessageProcessor:
                 summary = sales_data.get("summary", {})
                 time_period = sales_data.get("time_period", {})
                 top_products_count = len(sales_data.get("top_products", []))
+                geo_regions_count = len(sales_data.get("geographic_data", []))
                 
                 logger.info(f"Retrieved sales data for {time_period.get('range_type')}: "
                             f"{time_period.get('start_date')} to {time_period.get('end_date')}")
                 logger.info(f"Sales summary: Total sales: {summary.get('total_sales')}, "
                             f"Orders: {summary.get('total_orders')}, "
-                            f"Top Products: {top_products_count}")
+                            f"Top Products: {top_products_count}, "
+                            f"Geographic Regions: {geo_regions_count}")
             else:
                 logger.warning(f"No sales data retrieved for time range: {intent['time_range']}")
         except Exception as e:
@@ -165,11 +164,16 @@ class MessageProcessor:
         # Use AI agent to generate response
         try:
             logger.info(f"Generating AI response with {'sales data' if sales_data else 'no sales data'}")
+            
+            # Pass conversation_id to the agent to maintain per-user memory
             response = await sales_analyst_agent.analyze_query(
                 query=message_text,
                 user_context=user_context,
-                sales_data=sales_data
+                sales_data=sales_data,
+                intent=intent,
+                conversation_id=conversation_id
             )
+            
             logger.debug(f"AI response generated: {response[:100]}...")
         except Exception as e:
             logger.error(f"Error generating response: {e}")
@@ -184,7 +188,7 @@ class MessageProcessor:
                 "channel": channel,
                 "direction": "outgoing",
                 "content": response,
-                "message_metadata": {"intent": intent, "has_sales_data": sales_data is not None}  # Fixed field name
+                "message_metadata": {"intent": intent, "has_sales_data": sales_data is not None}
             })
             logger.debug("Logged outgoing message successfully")
         except Exception as e:
@@ -192,6 +196,34 @@ class MessageProcessor:
             # Continue even if message logging fails
         
         return response, {"intent": intent, "user": user_context}
+    
+    @staticmethod
+    async def clear_user_memory(user_identifier: Dict[str, str], channel: str):
+        """
+        Clear the conversation memory for a specific user.
+        
+        Args:
+            user_identifier: Dictionary with user identifier
+            channel: The communication channel
+        """
+        conversation_id = None
+        
+        if channel == "slack" and "slack_id" in user_identifier:
+            conversation_id = f"slack_{user_identifier['slack_id']}"
+        elif channel == "whatsapp" and "whatsapp_number" in user_identifier:
+            conversation_id = f"whatsapp_{user_identifier['whatsapp_number']}"
+        elif (channel == "email" or channel == "test") and "email" in user_identifier:
+            conversation_id = f"email_{user_identifier['email']}"
+            
+        if conversation_id:
+            # Clear specific conversation memory
+            sales_analyst_agent.clear_memory(conversation_id)
+            logger.info(f"Cleared conversation memory for {conversation_id}")
+            return True
+        else:
+            # If no conversation ID could be determined, log an error
+            logger.error(f"Could not determine conversation ID for {channel} user: {user_identifier}")
+            return False
 
 
 message_processor = MessageProcessor()

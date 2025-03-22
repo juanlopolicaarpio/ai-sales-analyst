@@ -6,6 +6,12 @@ from datetime import datetime, timedelta
 from loguru import logger
 
 from openai import OpenAI
+from langchain.chains import ConversationChain
+from langchain.chat_models import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.memory import ConversationBufferMemory
+from langchain.schema import HumanMessage, AIMessage
+
 from app.config import settings
 from app.utils.helpers import format_currency, format_percentage
 
@@ -31,6 +37,34 @@ Guidelines:
 - If you don't have enough information, ask clarifying questions.
 - Format currency values and percentages consistently.
 """
+        # Initialize LangChain components
+        self.llm = ChatOpenAI(
+            model_name="gpt-3.5-turbo",
+            temperature=0.2,
+            openai_api_key=settings.OPENAI_API_KEY
+        )
+        
+        # Create a properly configured prompt template
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", self.system_prompt),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{input}")
+        ])
+        
+        # Create memory with correctly named variables
+        self.memory = ConversationBufferMemory(
+            return_messages=True, 
+            memory_key="history",
+            input_key="input"
+        )
+        
+        # Configure the conversation chain
+        self.chain = ConversationChain(
+            llm=self.llm,
+            prompt=self.prompt,
+            memory=self.memory,
+            verbose=False
+        )
     
     def _format_currency(self, amount: float) -> str:
         """Format a number as Philippine pesos."""
@@ -41,7 +75,8 @@ Guidelines:
         query: str, 
         user_context: Dict[str, Any],
         sales_data: Optional[Dict[str, Any]] = None,
-        intent: Optional[Dict[str, Any]] = None
+        intent: Optional[Dict[str, Any]] = None,
+        conversation_id: Optional[str] = None
     ) -> str:
         """
         Analyze a user query and generate a response.
@@ -55,49 +90,58 @@ Guidelines:
         Returns:
             str: Response to the user.
         """
-        # Build messages array
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-        ]
-        
-        # Add user context
-        context_prompt = f"""
+        try:
+            # Build the context for the query
+            context_prompt = f"""
 Here is context about the user and their store:
 - User: {user_context.get('name', 'Store Owner')}
 - Store: {user_context.get('store_name', 'E-commerce Store')}
 - Platform: {user_context.get('platform', 'Shopify')}
 - Timezone: {user_context.get('timezone', 'UTC')}
 """
-        messages.append({"role": "system", "content": context_prompt})
-        
-        # Add intent details if available
-        if intent:
-            intent_prompt = f"Extracted query intent:\n{json.dumps(intent, indent=2)}"
-            messages.append({"role": "system", "content": intent_prompt})
-        
-        # Add sales data if available
-        if sales_data:
-            # Determine top products limit from intent if provided, defaulting to 5
-            top_limit = 5
-            if intent and isinstance(intent.get("top_products"), int):
-                top_limit = intent["top_products"]
-            sales_context = self._format_sales_data(sales_data, top_products_limit=top_limit)
-            messages.append({"role": "system", "content": f"Here is the relevant sales data:\n{sales_context}"})
-        
-        # Add the user query
-        messages.append({"role": "user", "content": query})
-        
-        try:
-            # Get response from OpenAI
-            response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=messages,
-                temperature=0.2
-            )
-            return response.choices[0].message.content
+            
+            # Add intent details if available
+            if intent:
+                intent_prompt = f"Extracted query intent:\n{json.dumps(intent, indent=2)}"
+                context_prompt += f"\n{intent_prompt}"
+            
+            # Add sales data if available
+            if sales_data:
+                # Determine top products limit from intent if provided, defaulting to 5
+                top_limit = 5
+                if intent and isinstance(intent.get("top_products"), int):
+                    top_limit = intent["top_products"]
+                sales_context = self._format_sales_data(sales_data, top_products_limit=top_limit)
+                context_prompt += f"\n\nHere is the relevant sales data:\n{sales_context}"
+                
+            # Combine the context with the user's query
+            full_query = f"{context_prompt}\n\nUser question: {query}"
+            
+            # Use LangChain conversation chain for the response
+            response = self.chain.run(input=full_query)
+            return response
+            
         except Exception as e:
-            logger.error(f"Error getting response from OpenAI: {e}")
-            return "I'm sorry, I encountered an error while analyzing your request. Please try again later."
+            logger.error(f"Error getting response from LangChain: {e}")
+            logger.exception(e)
+            # Fallback to OpenAI direct API if LangChain fails
+            try:
+                # Build messages array for OpenAI direct API
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": f"{context_prompt}\n\n{query}"}
+                ]
+                
+                # Get response from OpenAI
+                response = self.client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=messages,
+                    temperature=0.2
+                )
+                return response.choices[0].message.content
+            except Exception as fallback_error:
+                logger.error(f"Error in fallback to OpenAI: {fallback_error}")
+                return "I'm sorry, I encountered an error while analyzing your request. Please try again later."
     
     def _format_sales_data(self, sales_data: Dict[str, Any], top_products_limit: Optional[int] = 5) -> str:
         """
@@ -196,26 +240,33 @@ Write a 3-4 paragraph summary that highlights the key metrics, any significant c
 and top-performing products. End with one or two brief recommendations based on the data.
 """
         
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": summary_prompt}
-        ]
-        
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4",
-                messages=messages,
-                temperature=0.2
-            )
-            return response.choices[0].message.content
+            # Use LangChain for consistency
+            response = self.chain.run(input=summary_prompt)
+            return response
         except Exception as e:
-            logger.error(f"Error generating daily summary: {e}")
-            return (
-                f"Daily Sales Summary for {store_name}\n\n"
-                f"Total Sales: {format_currency(sales_data.get('summary', {}).get('total_sales', 0))}\n"
-                f"Total Orders: {sales_data.get('summary', {}).get('total_orders', 0)}\n\n"
-                "Unable to generate detailed summary at this time."
-            )
+            logger.error(f"Error generating daily summary via LangChain: {e}")
+            # Fallback to OpenAI direct API
+            try:
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": summary_prompt}
+                ]
+                
+                response = self.client.chat.completions.create(
+                    model="gpt-4",
+                    messages=messages,
+                    temperature=0.2
+                )
+                return response.choices[0].message.content
+            except Exception as fallback_error:
+                logger.error(f"Error in fallback to OpenAI: {fallback_error}")
+                return (
+                    f"Daily Sales Summary for {store_name}\n\n"
+                    f"Total Sales: {format_currency(sales_data.get('summary', {}).get('total_sales', 0))}\n"
+                    f"Total Orders: {sales_data.get('summary', {}).get('total_orders', 0)}\n\n"
+                    "Unable to generate detailed summary at this time."
+                )
     
     async def generate_anomaly_alert(self, anomaly_data: Dict[str, Any], store_name: str) -> str:
         """
@@ -248,26 +299,33 @@ Write a brief, clear alert (2-3 sentences) that explains the anomaly and its sig
 Start with "🚨 ALERT:" followed by a brief but informative message.
 """
         
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": alert_prompt}
-        ]
-        
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4",
-                messages=messages,
-                temperature=0.2
-            )
-            return response.choices[0].message.content
+            # Use LangChain for consistency
+            response = self.chain.run(input=alert_prompt)
+            return response
         except Exception as e:
-            logger.error(f"Error generating anomaly alert: {e}")
-            return (
-                f"🚨 ALERT: Unusual {anomaly_type} detected for {store_name}. "
-                f"Current value: {format_currency(anomaly_value) if anomaly_type == 'sales' else anomaly_value}, "
-                f"expected around {format_currency(expected_value) if anomaly_type == 'sales' else expected_value} "
-                f"({format_percentage(percentage_change)} change)."
-            )
+            logger.error(f"Error generating anomaly alert via LangChain: {e}")
+            # Fallback to OpenAI direct API
+            try:
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": alert_prompt}
+                ]
+                
+                response = self.client.chat.completions.create(
+                    model="gpt-4",
+                    messages=messages,
+                    temperature=0.2
+                )
+                return response.choices[0].message.content
+            except Exception as fallback_error:
+                logger.error(f"Error in fallback to OpenAI: {fallback_error}")
+                return (
+                    f"🚨 ALERT: Unusual {anomaly_type} detected for {store_name}. "
+                    f"Current value: {format_currency(anomaly_value) if anomaly_type == 'sales' else anomaly_value}, "
+                    f"expected around {format_currency(expected_value) if anomaly_type == 'sales' else expected_value} "
+                    f"({format_percentage(percentage_change)} change)."
+                )
 
 
 # Create a singleton instance
