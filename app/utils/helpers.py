@@ -281,7 +281,31 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
         primary_metric = "conversion"
     
     # Determine if user is asking for top products
-    top_products = any(phrase in text.lower() for phrase in ["top products", "best selling", "best-selling", "best seliing", "top 5", "top five", "top ten", "top 10"])
+    # FIX: Check for numeric patterns like "top 7" or "top seven" products
+    top_products_pattern = r"top\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(products|selling|items|goods)"
+    top_match = re.search(top_products_pattern, text.lower())
+    
+    if top_match:
+        # Convert word numbers to digits if needed
+        number_word_map = {
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10
+        }
+        
+        number_str = top_match.group(1)
+        if number_str in number_word_map:
+            top_n = number_word_map[number_str]
+        else:
+            try:
+                top_n = int(number_str)
+            except ValueError:
+                top_n = 5  # Default to top 5 if parsing fails
+        
+        top_products = True
+    else:
+        # Check generic "top products" phrases
+        top_products = any(phrase in text.lower() for phrase in ["top products", "best selling", "best-selling", "best seliing"])
+        top_n = 5  # Default to top 5
     
     # Determine if user is asking for bottom products
     bottom_products = any(phrase in text.lower() for phrase in ["worst selling", "lowest", "worst-selling", "poorest performing", "bottom 5", "bottom five"])
@@ -306,12 +330,13 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
         specific_start_date = date_range_match.group(1)
         specific_end_date = date_range_match.group(2)
     
-    logger.info(f"Extracted intent: time_range={time_range}, metric={primary_metric}, top_products={top_products}, bottom_products={bottom_products}, geo={include_geo_data}, conversion={include_conversion_rate}")
+    logger.info(f"Extracted intent: time_range={time_range}, metric={primary_metric}, top_products={top_products}, top_n={top_n if top_products else 'N/A'}, bottom_products={bottom_products}, geo={include_geo_data}, conversion={include_conversion_rate}")
     
     return {
         "time_range": time_range,
         "primary_metric": primary_metric,
-        "top_products": top_products,
+        "top_products": top_products,  # Boolean flag
+        "top_products_count": top_n if top_products else 5,  # Number of top products to show
         "bottom_products": bottom_products,
         "include_geo_data": include_geo_data,
         "include_conversion_rate": include_conversion_rate,

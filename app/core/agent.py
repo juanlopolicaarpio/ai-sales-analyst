@@ -1,4 +1,3 @@
-# sales_analyst_agent.py
 import json
 import os
 from typing import Dict, List, Any, Optional, Union
@@ -16,11 +15,6 @@ from app.config import settings
 from app.utils.helpers import format_currency, format_percentage
 
 
-class SalesAnalystAgent:
-    """
-    AI agent for analyzing sales data and responding to user queries.
-    """
-    
 class SalesAnalystAgent:
     """
     AI agent for analyzing sales data and responding to user queries.
@@ -88,94 +82,6 @@ TONE:
         """Format a number as currency."""
         return f"${float(amount):,.2f}"
     
-    async def analyze_query(
-        self, 
-        query: str, 
-        user_context: Dict[str, Any],
-        sales_data: Optional[Dict[str, Any]] = None,
-        intent: Optional[Dict[str, Any]] = None,
-        conversation_id: Optional[str] = None
-    ) -> str:
-        """
-        Analyze a user query and generate a response.
-        
-        Args:
-            query: User's question or command.
-            user_context: Context about the user (name, store, preferences).
-            sales_data: Optional sales data to include in context.
-            intent: Optional dictionary of extracted query intent.
-        
-        Returns:
-            str: Response to the user.
-        """
-        try:
-            # Build the context for the query
-            context_prompt = f"""
-Here is context about the user and their store:
-- User: {user_context.get('name', 'Store Owner')}
-- Store: {user_context.get('store_name', 'E-commerce Store')}
-- Platform: {user_context.get('platform', 'Shopify')}
-- Timezone: {user_context.get('timezone', 'UTC')}
-"""
-            
-            # Add intent details if available
-            if intent:
-                intent_prompt = f"Extracted query intent:\n{json.dumps(intent, indent=2)}"
-                context_prompt += f"\n{intent_prompt}"
-            
-            # Add sales data if available
-            if sales_data:
-                # Check if the requested data is available
-                has_geo_data = sales_data.get("geo_data") and len(sales_data.get("geo_data", [])) > 0
-                has_growing_products = sales_data.get("growing_products") and len(sales_data.get("growing_products", [])) > 0
-                has_declining_products = sales_data.get("declining_products") and len(sales_data.get("declining_products", [])) > 0
-                
-                # Add specific data availability notes to help the AI generate better responses
-                data_availability = f"""
-Data Availability Notes:
-- Geographic data: {'Available' if has_geo_data else 'Not available'}
-- Growing products data: {'Available' if has_growing_products else 'Not available'}
-- Declining products data: {'Available' if has_declining_products else 'Not available'}
-"""
-                context_prompt += data_availability
-                
-                # Determine top products limit from intent if provided, defaulting to 5
-                top_limit = 5
-                if intent and isinstance(intent.get("top_products"), int):
-                    top_limit = intent["top_products"]
-                    
-                sales_context = self._format_sales_data(sales_data, top_products_limit=top_limit)
-                context_prompt += f"\n\nHere is the relevant sales data:\n{sales_context}"
-                
-            # Combine the context with the user's query
-            full_query = f"{context_prompt}\n\nUser question: {query}"
-            
-            # Use LangChain conversation chain for the response
-            response = self.chain.run(input=full_query)
-            return response
-            
-        except Exception as e:
-            logger.error(f"Error getting response from LangChain: {e}")
-            logger.exception(e)
-            # Fallback to OpenAI direct API if LangChain fails
-            try:
-                # Build messages array for OpenAI direct API
-                messages = [
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": f"{context_prompt}\n\n{query}"}
-                ]
-                
-                # Get response from OpenAI
-                response = self.client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=messages,
-                    temperature=0.2
-                )
-                return response.choices[0].message.content
-            except Exception as fallback_error:
-                logger.error(f"Error in fallback to OpenAI: {fallback_error}")
-                return "I'm sorry, I encountered an error while analyzing your request. Please try again later."
-    
     def _format_sales_data(self, sales_data: Dict[str, Any], top_products_limit: Optional[int] = 5) -> str:
         """
         Format sales data for including in the prompt.
@@ -224,21 +130,11 @@ Data Availability Notes:
                 growth_rate = product.get("growth_rate", 0)
                 formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} (Growth Rate: {format_percentage(growth_rate)}, {quantity} units sold)\n"
         
-        # Add declining products if available
-        declining_products = sales_data.get("declining_products", [])
-        if declining_products:
-            formatted_text += "\nDECLINING PRODUCTS:\n"
-            for i, product in enumerate(declining_products[:top_products_limit], 1):
-                quantity = product.get("quantity", 0)
-                revenue = product.get("revenue", 0)
-                growth_rate = product.get("growth_rate", 0)
-                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} (Decline Rate: {format_percentage(growth_rate)}, {quantity} units sold)\n"
-        
         # Add top products if available
         top_products = sales_data.get("top_products", [])
         if top_products:
-            formatted_text += "\nTOP PRODUCTS BY REVENUE:\n"
-            for i, product in enumerate(top_products[:top_products_limit], 1):
+            formatted_text += f"\nTOP {len(top_products)} PRODUCTS BY REVENUE:\n"
+            for i, product in enumerate(top_products, 1):
                 quantity = product.get("quantity") or product.get("units_sold") or 0
                 revenue = product.get("revenue", 0)
                 avg_price = revenue / quantity if quantity else 0
@@ -255,13 +151,14 @@ Data Availability Notes:
         geo_data = sales_data.get("geo_data", [])
         if geo_data:
             formatted_text += "\nGEOGRAPHIC DISTRIBUTION:\n"
-            for i, country in enumerate(geo_data[:5], 1):  # Show top 5 countries
+            for i, country in enumerate(geo_data, 1):
                 formatted_text += f"{i}. {country.get('country', 'Unknown')}: {format_currency(country.get('total_sales', 0))} ({country.get('total_orders', 0)} orders)\n"
-                # Add top regions for each country
                 regions = country.get("regions", [])
-                sorted_regions = sorted(regions, key=lambda r: r.get('total_sales', 0), reverse=True)
-                for j, region in enumerate(sorted_regions[:3], 1):  # Show top 3 regions per country
+                for j, region in enumerate(regions, 1):
                     formatted_text += f"   {i}.{j} {region.get('name', 'Unknown')}: {format_currency(region.get('total_sales', 0))} ({region.get('total_orders', 0)} orders)\n"
+                    cities = region.get("cities", [])
+                    for k, city in enumerate(cities[:3], 1):
+                        formatted_text += f"      {i}.{j}.{k} {city.get('name', 'Unknown')}: {format_currency(city.get('total_sales', 0))} ({city.get('total_orders', 0)} orders)\n"
         
         # Add anomalies if available
         anomalies = sales_data.get("anomalies", [])
@@ -272,6 +169,82 @@ Data Availability Notes:
         
         return formatted_text
     
+    async def analyze_query(
+        self, 
+        query: str, 
+        user_context: Dict[str, Any],
+        sales_data: Optional[Dict[str, Any]] = None,
+        intent: Optional[Dict[str, Any]] = None,
+        conversation_id: Optional[str] = None
+    ) -> str:
+        """
+        Analyze a user query and generate a response.
+        
+        Args:
+            query: User's question or command.
+            user_context: Context about the user (name, store, preferences).
+            sales_data: Optional sales data to include in context.
+            intent: Optional dictionary of extracted query intent.
+        
+        Returns:
+            str: Response to the user.
+        """
+        try:
+            context_prompt = f"""
+Here is context about the user and their store:
+- User: {user_context.get('name', 'Store Owner')}
+- Store: {user_context.get('store_name', 'E-commerce Store')}
+- Platform: {user_context.get('platform', 'Shopify')}
+- Timezone: {user_context.get('timezone', 'UTC')}
+"""
+            if intent:
+                intent_prompt = f"Extracted query intent:\n{json.dumps(intent, indent=2)}"
+                context_prompt += f"\n{intent_prompt}"
+            
+            if sales_data:
+                has_geo_data = sales_data.get("geo_data") and len(sales_data.get("geo_data", [])) > 0
+                has_growing_products = sales_data.get("growing_products") and len(sales_data.get("growing_products", [])) > 0
+                has_declining_products = sales_data.get("declining_products") and len(sales_data.get("declining_products", [])) > 0
+                
+                data_availability = f"""
+Data Availability Notes:
+- Geographic data: {'Available' if has_geo_data else 'Not available'}
+- Growing products data: {'Available' if has_growing_products else 'Not available'}
+- Declining products data: {'Available' if has_declining_products else 'Not available'}
+"""
+                context_prompt += data_availability
+                
+                top_limit = 5
+                if intent and isinstance(intent.get("top_products"), int):
+                    top_limit = intent["top_products"]
+                    
+                sales_context = self._format_sales_data(sales_data, top_products_limit=top_limit)
+                context_prompt += f"\n\nHere is the relevant sales data:\n{sales_context}"
+                
+            full_query = f"{context_prompt}\n\nUser question: {query}"
+            response = self.chain.run(input=full_query)
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error getting response from LangChain: {e}")
+            logger.exception(e)
+            # Fallback to OpenAI direct API if LangChain fails
+            try:
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": f"{context_prompt}\n\n{query}"}
+                ]
+                
+                response = self.client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=messages,
+                    temperature=0.2
+                )
+                return response.choices[0].message.content
+            except Exception as fallback_error:
+                logger.error(f"Error in fallback to OpenAI: {fallback_error}")
+                return "I'm sorry, I encountered an error while processing your request."
+    
     def clear_memory(self, conversation_id: str = None):
         """
         Clear the conversation memory.
@@ -279,9 +252,9 @@ Data Availability Notes:
         Args:
             conversation_id: Conversation ID to clear (if None, clears all memory)
         """
-        # Simply reset the memory buffer
         self.memory.clear()
-        logger.info(f"Cleared conversation memory for {conversation_id or 'all conversations'}")    
+        logger.info(f"Cleared conversation memory for {conversation_id or 'all conversations'}")
+    
     async def generate_daily_summary(self, sales_data: Dict[str, Any], store_name: str) -> str:
         """
         Generate a daily sales summary.
@@ -304,18 +277,15 @@ and top-performing products. End with one or two brief recommendations based on 
 """
         
         try:
-            # Use LangChain for consistency
             response = self.chain.run(input=summary_prompt)
             return response
         except Exception as e:
             logger.error(f"Error generating daily summary via LangChain: {e}")
-            # Fallback to OpenAI direct API
             try:
                 messages = [
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": summary_prompt}
                 ]
-                
                 response = self.client.chat.completions.create(
                     model="gpt-4",
                     messages=messages,
@@ -363,18 +333,15 @@ Start with "🚨 ALERT:" followed by a brief but informative message.
 """
         
         try:
-            # Use LangChain for consistency
             response = self.chain.run(input=alert_prompt)
             return response
         except Exception as e:
             logger.error(f"Error generating anomaly alert via LangChain: {e}")
-            # Fallback to OpenAI direct API
             try:
                 messages = [
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": alert_prompt}
                 ]
-                
                 response = self.client.chat.completions.create(
                     model="gpt-4",
                     messages=messages,
@@ -389,7 +356,6 @@ Start with "🚨 ALERT:" followed by a brief but informative message.
                     f"expected around {format_currency(expected_value) if anomaly_type == 'sales' else expected_value} "
                     f"({format_percentage(percentage_change)} change)."
                 )
-
 
 # Create a singleton instance
 sales_analyst_agent = SalesAnalystAgent()

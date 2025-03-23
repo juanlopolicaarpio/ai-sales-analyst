@@ -24,6 +24,7 @@ async def get_sales_data(
     include_conversion_rate: bool = False,
     specific_start_date: Optional[datetime] = None,
     specific_end_date: Optional[datetime] = None,
+    top_products_limit: int = 5,  # New parameter for limiting top products
 ) -> Dict[str, Any]:
     """
     Get sales data for a specific time range.
@@ -37,6 +38,7 @@ async def get_sales_data(
         include_conversion_rate: Whether to include conversion rate data
         specific_start_date: Custom start date (for custom time range)
         specific_end_date: Custom end date (for custom time range)
+        top_products_limit: Maximum number of top products to return
 
     Returns:
         dict: Sales data
@@ -165,8 +167,9 @@ async def get_sales_data(
     declining_products = [p for p in sorted_by_growth if p.get("growth_rate", 0) < 0][-10:]
     declining_products.reverse()  # Reverse to get worst performing first
 
-    top_products = sorted_by_revenue[:10]  # Ensure we get up to 10 products
-    bottom_products = sorted_by_revenue[-10:] if len(sorted_by_revenue) > 10 else []
+    # Use the requested limit for top products
+    top_products = sorted_by_revenue[:top_products_limit]  # Use the provided limit
+    bottom_products = sorted_by_revenue[-top_products_limit:] if len(sorted_by_revenue) >= top_products_limit else []
 
     # Log the top products for debugging
     logger.info(f"Number of top products identified: {len(top_products)}")
@@ -191,8 +194,10 @@ async def get_sales_data(
                     
                     if store:
                         client = ShopifyClient(store)
-                        geo_data = await client.get_geolocation_data(start_date, end_date)
-                        logger.info(f"ShopifyClient geo data obtained: {len(geo_data)} countries")
+                        shop_geo_data = await client.get_geolocation_data(start_date, end_date)
+                        if shop_geo_data and len(shop_geo_data) > 0:
+                            geo_data = shop_geo_data
+                            logger.info(f"ShopifyClient geo data obtained: {len(geo_data)} countries")
                 except Exception as shopify_error:
                     logger.error(f"Error from ShopifyClient.get_geolocation_data: {shopify_error}")
         except Exception as e:
@@ -243,6 +248,7 @@ async def get_sales_data(
             "previous_orders": prev_total_orders,
             "previous_aov": prev_average_order_value,
         },
+        "top_products_count": top_products_limit,  # Include the count so AI knows how many were requested
         "top_products": top_products,
         "bottom_products": bottom_products,
         "growing_products": growing_products,
@@ -251,8 +257,6 @@ async def get_sales_data(
         "conversion": conversion_data,
         "anomalies": [],  # This would be populated by the anomaly detection service
     }
-
-
 def extract_geo_data_from_orders(orders):
     """
     Extract geographic data directly from order data.
@@ -305,6 +309,7 @@ def extract_geo_data_from_orders(orders):
         except Exception as e:
             logger.error(f"Error inspecting sample order: {e}")
 
+    # Enhanced address extraction and processing
     for order in orders:
         try:
             # Handle different order data formats
@@ -330,16 +335,30 @@ def extract_geo_data_from_orders(orders):
             if not order_data:
                 continue
             
-            # Try to get shipping address
+            # Try to get shipping address - look in multiple possible locations
             shipping_address = None
             
-            # If order_data is a dict, access it directly
+            # Check Shopify structure
             if isinstance(order_data, dict):
-                shipping_address = order_data.get('shipping_address')
+                # 1. Direct shipping_address
+                if 'shipping_address' in order_data:
+                    shipping_address = order_data['shipping_address']
                 
-                # Try billing address if shipping address is not available
-                if not shipping_address:
-                    shipping_address = order_data.get('billing_address')
+                # 2. Check in shipping object
+                elif 'shipping' in order_data and isinstance(order_data['shipping'], dict):
+                    shipping_address = order_data['shipping'].get('address')
+                
+                # 3. Check in customer's default address
+                elif 'customer' in order_data and isinstance(order_data['customer'], dict):
+                    if 'default_address' in order_data['customer']:
+                        shipping_address = order_data['customer']['default_address']
+                    # Look in addresses array
+                    elif 'addresses' in order_data['customer'] and isinstance(order_data['customer']['addresses'], list) and order_data['customer']['addresses']:
+                        shipping_address = order_data['customer']['addresses'][0]
+                
+                # 4. Try billing address as last resort
+                elif 'billing_address' in order_data:
+                    shipping_address = order_data['billing_address']
             
             # If we couldn't find an address, skip this order
             if not shipping_address:
@@ -347,10 +366,52 @@ def extract_geo_data_from_orders(orders):
             
             address_count += 1
             
-            # Extract location data
+            # Extract and normalize location data with better handling for sub-regions
             country = shipping_address.get('country', 'Unknown')
-            province = shipping_address.get('province', 'Unknown')
-            city = shipping_address.get('city', 'Unknown')
+            province = shipping_address.get('province', '')
+            city = shipping_address.get('city', '')
+            
+            # Additional location data that might be available
+            district = shipping_address.get('district', '')
+            barangay = shipping_address.get('barangay', '')  # For Philippines
+            suburb = shipping_address.get('suburb', '')
+            # Extract district/area from address lines if not found directly
+            address1 = shipping_address.get('address1', '')
+            address2 = shipping_address.get('address2', '')
+            
+            # Further subdivision for Philippines specifically
+            if country == "Philippines" and not province:
+                # Try to extract province from the address
+                province_keywords = ["province", "provinces"]
+                for address_part in [address1, address2]:
+                    if address_part:
+                        # Look for phrases like "Manila province" or "province of Manila"
+                        for keyword in province_keywords:
+                            if keyword in address_part.lower():
+                                parts = address_part.lower().split(keyword)
+                                if len(parts) > 1:
+                                    possible_province = parts[0].strip() if keyword == "province" else parts[1].strip()
+                                    if possible_province:
+                                        province = possible_province.title()
+                                        break
+            
+            # Try to extract city/municipality from address if not found
+            if country == "Philippines" and not city and (address1 or address2):
+                city_keywords = ["city", "municipality", "town"]
+                for address_part in [address1, address2]:
+                    if address_part:
+                        for keyword in city_keywords:
+                            if keyword in address_part.lower():
+                                parts = address_part.lower().split(keyword)
+                                if len(parts) > 1:
+                                    possible_city = parts[0].strip() if keyword == "city" else parts[1].strip()
+                                    if possible_city:
+                                        city = possible_city.title()
+                                        break
+            
+            # If we have a barangay but no district, use barangay as district
+            if country == "Philippines" and barangay and not district:
+                district = barangay
             
             # Handle empty values
             if not country or country.strip() == '':
@@ -358,6 +419,12 @@ def extract_geo_data_from_orders(orders):
             if not province or province.strip() == '':
                 province = 'Unknown Region'
             if not city or city.strip() == '':
+                city = 'Unknown City'
+            if not district or district.strip() == '':
+                district = 'Unknown District'
+            
+            # If city is just the province name repeated, clear it to avoid duplication
+            if city.lower() == province.lower():
                 city = 'Unknown City'
             
             # Initialize country data if not exists
@@ -388,19 +455,35 @@ def extract_geo_data_from_orders(orders):
             if city not in geo_data[country]['regions'][province]['cities']:
                 geo_data[country]['regions'][province]['cities'][city] = {
                     'total_orders': 0,
-                    'total_sales': 0
+                    'total_sales': 0,
+                    'districts': {}
                 }
             
             # Update city stats
             geo_data[country]['regions'][province]['cities'][city]['total_orders'] += 1
             geo_data[country]['regions'][province]['cities'][city]['total_sales'] += order.total_price
             
+            # Add district level if we have it (for more detailed breakdowns)
+# Add district level if we have it (for more detailed breakdowns)
+            if district != 'Unknown District':
+                if 'districts' not in geo_data[country]['regions'][province]['cities'][city]:
+                    geo_data[country]['regions'][province]['cities'][city]['districts'] = {}
+                    
+                if district not in geo_data[country]['regions'][province]['cities'][city]['districts']:
+                    geo_data[country]['regions'][province]['cities'][city]['districts'][district] = {
+                        'total_orders': 0,
+                        'total_sales': 0
+                    }
+                    
+                geo_data[country]['regions'][province]['cities'][city]['districts'][district]['total_orders'] += 1
+                geo_data[country]['regions'][province]['cities'][city]['districts'][district]['total_sales'] += order.total_price
+            
         except Exception as e:
             logger.error(f"Error processing order for geo data: {e}")
     
     logger.info(f"Found addresses in {address_count} out of {total_orders} orders")
     
-    # Convert geo_data dict to list format
+    # Convert geo_data dict to list format with enhanced structure
     result = []
     for country, country_data in geo_data.items():
         # Convert regions dict to list
@@ -409,11 +492,30 @@ def extract_geo_data_from_orders(orders):
             # Convert cities dict to list
             cities_list = []
             for city_name, city_data in region_data['cities'].items():
-                cities_list.append({
+                # Convert districts dict to list if they exist
+                districts_list = []
+                if 'districts' in city_data:
+                    for district_name, district_data in city_data['districts'].items():
+                        districts_list.append({
+                            'name': district_name,
+                            'total_orders': district_data['total_orders'],
+                            'total_sales': district_data['total_sales']
+                        })
+                    
+                    # Sort districts by total sales
+                    districts_list.sort(key=lambda x: x['total_sales'], reverse=True)
+                
+                city_info = {
                     'name': city_name,
                     'total_orders': city_data['total_orders'],
                     'total_sales': city_data['total_sales']
-                })
+                }
+                
+                # Only add districts if we have them
+                if districts_list:
+                    city_info['districts'] = districts_list
+                
+                cities_list.append(city_info)
             
             # Sort cities by total sales
             cities_list.sort(key=lambda x: x['total_sales'], reverse=True)
@@ -446,10 +548,10 @@ def extract_geo_data_from_orders(orders):
             logger.info(f"Country: {country['country']}, Sales: {country['total_sales']:.2f}, Orders: {country['total_orders']}")
             for region in country['regions'][:3]:  # Log top 3 regions per country
                 logger.info(f"  Region: {region['name']}, Sales: {region['total_sales']:.2f}, Orders: {region['total_orders']}")
+                for city in region['cities'][:3]:  # Log top 3 cities per region
+                    logger.info(f"    City: {city['name']}, Sales: {city['total_sales']:.2f}, Orders: {city['total_orders']}")
     
     return result
-
-
 async def update_shopify_orders(db: AsyncSession, store: models.Store, since_date: Optional[datetime] = None):
     """
     Update orders from Shopify.
