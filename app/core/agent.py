@@ -82,7 +82,7 @@ TONE:
         """Format a number as currency."""
         return f"${float(amount):,.2f}"
     
-    def _format_sales_data(self, sales_data: Dict[str, Any], top_products_limit: Optional[int] = 5) -> str:
+    def format_sales_data(self, sales_data: Dict[str, Any], top_products_limit: Optional[int] = 5) -> str:
         """
         Format sales data for including in the prompt.
         
@@ -120,32 +120,31 @@ TONE:
             formatted_text += f"- Orders Change: {format_percentage(comparison.get('orders_change', 0))} ({comparison.get('previous_orders', 0)} previously)\n"
             formatted_text += f"- AOV Change: {format_percentage(comparison.get('aov_change', 0))} ({format_currency(comparison.get('previous_aov', 0))} previously)\n"
         
-        # Add growing products if available
-        growing_products = sales_data.get("growing_products", [])
-        if growing_products:
-            formatted_text += "\nFASTEST GROWING PRODUCTS:\n"
-            for i, product in enumerate(growing_products[:top_products_limit], 1):
-                quantity = product.get("quantity", 0)
-                revenue = product.get("revenue", 0)
-                growth_rate = product.get("growth_rate", 0)
-                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} (Growth Rate: {format_percentage(growth_rate)}, {quantity} units sold)\n"
+        # Get the actual top products limit from data or use provided default
+        actual_limit = sales_data.get("top_products_count", top_products_limit)
         
         # Add top products if available
         top_products = sales_data.get("top_products", [])
         if top_products:
-            formatted_text += f"\nTOP {len(top_products)} PRODUCTS BY REVENUE:\n"
+            count = len(top_products)
+            formatted_text += f"\nTOP {count} PRODUCTS BY REVENUE:\n"
             for i, product in enumerate(top_products, 1):
                 quantity = product.get("quantity") or product.get("units_sold") or 0
                 revenue = product.get("revenue", 0)
+                # Calculate contribution percentage
+                percentage = (revenue / summary.get('total_sales', 1)) * 100
                 avg_price = revenue / quantity if quantity else 0
-                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} ({quantity} units, avg. {format_currency(avg_price)} each)\n"
+                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} ({percentage:.2f}% of total, {quantity} units, avg. {format_currency(avg_price)} each)\n"
         
-        # Add bottom products if available
-        bottom_products = sales_data.get("bottom_products", [])
-        if bottom_products:
-            formatted_text += "\nBOTTOM PRODUCTS BY REVENUE:\n"
-            for i, product in enumerate(bottom_products[:top_products_limit], 1):
-                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(product.get('revenue', 0))} ({product.get('quantity', 0)} units)\n"
+        # Add bottom/declining products if available and requested
+        declining_products = sales_data.get("declining_products", [])
+        if declining_products:
+            formatted_text += "\nDECLINING PRODUCTS:\n"
+            for i, product in enumerate(declining_products[:actual_limit], 1):
+                quantity = product.get("quantity", 0)
+                revenue = product.get("revenue", 0)
+                growth_rate = product.get("growth_rate", 0)
+                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} (Decline Rate: {format_percentage(growth_rate)}, {quantity} units sold)\n"
         
         # Add geographic data if available
         geo_data = sales_data.get("geo_data", [])
@@ -153,12 +152,21 @@ TONE:
             formatted_text += "\nGEOGRAPHIC DISTRIBUTION:\n"
             for i, country in enumerate(geo_data, 1):
                 formatted_text += f"{i}. {country.get('country', 'Unknown')}: {format_currency(country.get('total_sales', 0))} ({country.get('total_orders', 0)} orders)\n"
+                
+                # Add regions for each country with better formatting
                 regions = country.get("regions", [])
                 for j, region in enumerate(regions, 1):
                     formatted_text += f"   {i}.{j} {region.get('name', 'Unknown')}: {format_currency(region.get('total_sales', 0))} ({region.get('total_orders', 0)} orders)\n"
+                    
+                    # Add cities for each region
                     cities = region.get("cities", [])
-                    for k, city in enumerate(cities[:3], 1):
+                    for k, city in enumerate(cities[:3], 1):  # Show top 3 cities per region
                         formatted_text += f"      {i}.{j}.{k} {city.get('name', 'Unknown')}: {format_currency(city.get('total_sales', 0))} ({city.get('total_orders', 0)} orders)\n"
+                        
+                        # Add districts if available
+                        districts = city.get("districts", [])
+                        for l, district in enumerate(districts[:2], 1):  # Show top 2 districts per city
+                            formatted_text += f"         {i}.{j}.{k}.{l} {district.get('name', 'Unknown')}: {format_currency(district.get('total_sales', 0))} ({district.get('total_orders', 0)} orders)\n"
         
         # Add anomalies if available
         anomalies = sales_data.get("anomalies", [])
@@ -218,7 +226,7 @@ Data Availability Notes:
                 if intent and isinstance(intent.get("top_products"), int):
                     top_limit = intent["top_products"]
                     
-                sales_context = self._format_sales_data(sales_data, top_products_limit=top_limit)
+                sales_context = self.format_sales_data(sales_data, top_products_limit=top_limit)
                 context_prompt += f"\n\nHere is the relevant sales data:\n{sales_context}"
                 
             full_query = f"{context_prompt}\n\nUser question: {query}"
@@ -270,7 +278,7 @@ Data Availability Notes:
 As an AI Sales Analyst, write a concise daily sales summary for {store_name}.
 Be professional but conversational. Focus on the most important insights.
 
-{self._format_sales_data(sales_data)}
+{self.format_sales_data(sales_data)}
 
 Write a 3-4 paragraph summary that highlights the key metrics, any significant changes or anomalies,
 and top-performing products. End with one or two brief recommendations based on the data.

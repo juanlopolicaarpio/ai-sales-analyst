@@ -24,7 +24,8 @@ async def get_sales_data(
     include_conversion_rate: bool = False,
     specific_start_date: Optional[datetime] = None,
     specific_end_date: Optional[datetime] = None,
-    top_products_limit: int = 5,  # New parameter for limiting top products
+    top_products_limit: int = 10,  # Changed default to 10
+    bottom_products_limit: int = 10,  # Added parameter with default of 10
 ) -> Dict[str, Any]:
     """
     Get sales data for a specific time range.
@@ -39,6 +40,7 @@ async def get_sales_data(
         specific_start_date: Custom start date (for custom time range)
         specific_end_date: Custom end date (for custom time range)
         top_products_limit: Maximum number of top products to return
+        bottom_products_limit: Maximum number of bottom products to return
 
     Returns:
         dict: Sales data
@@ -82,7 +84,7 @@ async def get_sales_data(
     ).options(selectinload(models.Order.order_items))
 
     prev_result = await db.execute(prev_stmt)
-    prev_orders = prev_result.scalars().all()  # FIXED: Was using result instead of prev_result
+    prev_orders = prev_result.scalars().all()
 
     # Calculate summary metrics
     total_sales = sum(order.total_price for order in orders)
@@ -155,26 +157,46 @@ async def get_sales_data(
         reverse=True
     )
 
-    # Sort by growth rate for growing/declining products
+    # Sort products by growth rate
     sorted_by_growth = sorted(
         product_sales.values(),
         key=lambda x: x.get("growth_rate", 0),
         reverse=True
     )
 
-    # Get top growing and declining products
-    growing_products = [p for p in sorted_by_growth if p.get("growth_rate", 0) > 0][:10]
-    declining_products = [p for p in sorted_by_growth if p.get("growth_rate", 0) < 0][-10:]
-    declining_products.reverse()  # Reverse to get worst performing first
+    # Get top/bottom products by revenue
+    top_products = sorted_by_revenue[:top_products_limit] if sorted_by_revenue else []
+    
+    # Handle bottom products - make sure we have enough products
+    if len(sorted_by_revenue) >= bottom_products_limit:
+        bottom_products = sorted_by_revenue[-bottom_products_limit:]
+        bottom_products.reverse()  # Reverse to show worst performer first
+    else:
+        bottom_products = sorted_by_revenue.copy()  # Copy all if fewer than limit
+        bottom_products.reverse()   # Reverse to show worst performer first
 
-    # Use the requested limit for top products
-    top_products = sorted_by_revenue[:top_products_limit]  # Use the provided limit
-    bottom_products = sorted_by_revenue[-top_products_limit:] if len(sorted_by_revenue) >= top_products_limit else []
+    # Get growing and declining products by growth rate
+    growing_products = [p for p in sorted_by_growth if p.get("growth_rate", 0) > 0][:top_products_limit]
+    
+    # Get declining products (negative growth rate)
+    declining_candidates = [p for p in sorted_by_growth if p.get("growth_rate", 0) < 0]
+    
+    if declining_candidates:
+        # Take the most declining products first (sort ascending by growth rate)
+        declining_products = sorted(declining_candidates, key=lambda x: x.get("growth_rate", 0))[:bottom_products_limit]
+    else:
+        declining_products = []  # No declining products
 
     # Log the top products for debugging
     logger.info(f"Number of top products identified: {len(top_products)}")
     for i, product in enumerate(top_products[:5], 1):
         logger.info(f"Top product {i}: {product.get('name', 'Unknown')} - Revenue: {product.get('revenue', 0):.2f}")
+
+    # Also log declining products if available
+    if declining_products:
+        logger.info(f"Number of declining products identified: {len(declining_products)}")
+        for i, product in enumerate(declining_products[:3], 1):
+            logger.info(f"Declining product {i}: {product.get('name', 'Unknown')} - Growth Rate: {product.get('growth_rate', 0):.2f}")
 
     # Fetch geo data if requested
     geo_data = []
@@ -248,7 +270,8 @@ async def get_sales_data(
             "previous_orders": prev_total_orders,
             "previous_aov": prev_average_order_value,
         },
-        "top_products_count": top_products_limit,  # Include the count so AI knows how many were requested
+        "top_products_count": top_products_limit,  # Include the requested count
+        "bottom_products_count": bottom_products_limit,  # Include the requested count
         "top_products": top_products,
         "bottom_products": bottom_products,
         "growing_products": growing_products,

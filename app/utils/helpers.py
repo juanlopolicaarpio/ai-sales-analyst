@@ -109,6 +109,7 @@ def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
     Args:
         range_type: "today", "yesterday", "last_7_days", "last_30_days", "this_month", "last_month"
                    or "specific_month_YYYY_MM" for a specific month
+                   or "specific_date_YYYY_MM_DD" for a specific date
         timezone: User's timezone
     
     Returns:
@@ -163,6 +164,26 @@ def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
             start_date = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
             end_date = now
     
+    # NEW: Handle specific date
+    elif range_type.startswith("specific_date_"):
+        # Format: specific_date_YYYY_MM_DD
+        try:
+            year, month, day = map(int, range_type.split("_")[2:])
+            logger.info(f"Processing specific date: {year}-{month}-{day}")
+            
+            # Start at beginning of the day
+            start_date = datetime(year, month, day, 0, 0, 0, tzinfo=tz)
+            
+            # End at end of the day
+            end_date = datetime(year, month, day, 23, 59, 59, 999999, tzinfo=tz)
+                
+            logger.info(f"Date range for {range_type}: {start_date} to {end_date}")
+        except (ValueError, IndexError) as e:
+            logger.error(f"Error parsing specific date {range_type}: {e}")
+            # If invalid format, default to today
+            start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = now
+    
     else:
         logger.warning(f"Unknown date range type: {range_type}, defaulting to last 7 days")
         # Default to last 7 days if unknown range type
@@ -200,6 +221,10 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
     # Pattern for just month names (e.g., "february", "feb")
     month_name_pattern = r"\b(" + "|".join(month_names + month_aliases) + r")\b"
     
+    # Specific date pattern - NEW
+    specific_date_pattern = r"(" + "|".join(month_names + month_aliases) + r")\s+(\d{1,2})(?:st|nd|rd|th)?"
+    specific_date_match = re.search(specific_date_pattern, text.lower())
+    
     # Basic patterns for metrics
     sales_pattern = r"sales|revenue|earnings|income"
     orders_pattern = r"orders|purchases"
@@ -212,11 +237,35 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
     # Patterns for conversion rate
     conversion_pattern = r"conversion|convert|abandonment|checkout"
     
+    # Patterns for declining products - NEW
+    declining_pattern = r"declining|decreased|worst|bottom|poorly|poorly\s+performing|worst\s+selling|lowest"
+    
     # Determine time range
     time_range = "last_7_days"  # Default to last 7 days
     
-    # Check for specific month patterns first (most specific)
-    if re.search(last_specific_month_pattern, text, re.IGNORECASE):
+    # Check for specific date first (highest priority) - NEW
+    if specific_date_match:
+        month_text = specific_date_match.group(1).lower()
+        day = int(specific_date_match.group(2))
+        
+        # Map month name to number
+        month_map = dict(zip(month_aliases, range(1, 13)))
+        month_map.update(dict(zip(month_names, range(1, 13))))
+        month_num = month_map.get(month_text)
+        
+        if month_num and 1 <= day <= 31:
+            now = datetime.now()
+            # Default to current year unless this would be in the future
+            year = now.year
+            if month_num > now.month or (month_num == now.month and day > now.day):
+                year -= 1
+                
+            # Return specific_date time range with the date
+            time_range = f"specific_date_{year}_{month_num:02d}_{day:02d}"
+            logger.info(f"Detected specific date: {month_text} {day} -> {time_range}")
+    
+    # Check for specific month patterns if no specific date found
+    elif re.search(last_specific_month_pattern, text, re.IGNORECASE):
         # Extract the month name
         match = re.search(last_specific_month_pattern, text, re.IGNORECASE)
         month_text = match.group(1).lower()
@@ -281,11 +330,19 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
         primary_metric = "conversion"
     
     # Determine if user is asking for top products
-    # FIX: Check for numeric patterns like "top 7" or "top seven" products
+    # Check for numeric patterns like "top 7 products" or "top seven" products
     top_products_pattern = r"top\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(products|selling|items|goods)"
     top_match = re.search(top_products_pattern, text.lower())
     
+    # Also check for simpler "top N" pattern
+    simple_top_pattern = r"top\s+(\d+)"
+    simple_top_match = re.search(simple_top_pattern, text.lower())
+    
+    top_products = False
+    top_n = 5  # Default value
+    
     if top_match:
+        top_products = True
         # Convert word numbers to digits if needed
         number_word_map = {
             "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
@@ -300,15 +357,19 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
                 top_n = int(number_str)
             except ValueError:
                 top_n = 5  # Default to top 5 if parsing fails
-        
+                
+    elif simple_top_match:
         top_products = True
+        try:
+            top_n = int(simple_top_match.group(1))
+        except ValueError:
+            top_n = 5
     else:
         # Check generic "top products" phrases
-        top_products = any(phrase in text.lower() for phrase in ["top products", "best selling", "best-selling", "best seliing"])
-        top_n = 5  # Default to top 5
+        top_products = any(phrase in text.lower() for phrase in ["top products", "best selling", "best-selling", "bestselling"])
     
-    # Determine if user is asking for bottom products
-    bottom_products = any(phrase in text.lower() for phrase in ["worst selling", "lowest", "worst-selling", "poorest performing", "bottom 5", "bottom five"])
+    # Determine if user is asking for bottom/declining products - NEW
+    bottom_products = re.search(declining_pattern, text, re.IGNORECASE) is not None
     
     # Determine if user is asking for geographic data
     include_geo_data = re.search(geo_pattern, text, re.IGNORECASE) is not None or "where" in text.lower()
@@ -336,7 +397,7 @@ def extract_query_intent(text: str) -> Dict[str, Any]:
         "time_range": time_range,
         "primary_metric": primary_metric,
         "top_products": top_products,  # Boolean flag
-        "top_products_count": top_n if top_products else 5,  # Number of top products to show
+        "top_products_count": top_n,   # Number of top products to show
         "bottom_products": bottom_products,
         "include_geo_data": include_geo_data,
         "include_conversion_rate": include_conversion_rate,
