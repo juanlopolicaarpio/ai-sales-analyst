@@ -9,6 +9,7 @@ from sqlalchemy import select, and_
 from loguru import logger
 import pandas as pd
 import numpy as np
+import pytz  # New import for timezone conversion
 
 from app.db import crud, models
 from app.utils.helpers import get_date_range, format_currency, format_percentage
@@ -52,11 +53,11 @@ async def get_sales_data(
     else:
         start_date, end_date = get_date_range(time_range, timezone)
 
-    # Convert to timezone-naive datetimes (to match the stored order_date)
+    # Convert the date range to UTC before stripping timezone info
     if start_date.tzinfo:
-        start_date = start_date.replace(tzinfo=None)
+        start_date = start_date.astimezone(pytz.UTC).replace(tzinfo=None)
     if end_date.tzinfo:
-        end_date = end_date.replace(tzinfo=None)
+        end_date = end_date.astimezone(pytz.UTC).replace(tzinfo=None)
 
     # Use selectinload to eager load order_items instead of lazy loading
     stmt = select(models.Order).where(
@@ -280,6 +281,8 @@ async def get_sales_data(
         "conversion": conversion_data,
         "anomalies": [],  # This would be populated by the anomaly detection service
     }
+
+
 def extract_geo_data_from_orders(orders):
     """
     Extract geographic data directly from order data.
@@ -487,7 +490,6 @@ def extract_geo_data_from_orders(orders):
             geo_data[country]['regions'][province]['cities'][city]['total_sales'] += order.total_price
             
             # Add district level if we have it (for more detailed breakdowns)
-# Add district level if we have it (for more detailed breakdowns)
             if district != 'Unknown District':
                 if 'districts' not in geo_data[country]['regions'][province]['cities'][city]:
                     geo_data[country]['regions'][province]['cities'][city]['districts'] = {}
@@ -575,6 +577,8 @@ def extract_geo_data_from_orders(orders):
                     logger.info(f"    City: {city['name']}, Sales: {city['total_sales']:.2f}, Orders: {city['total_orders']}")
     
     return result
+
+
 async def update_shopify_orders(db: AsyncSession, store: models.Store, since_date: Optional[datetime] = None):
     """
     Update orders from Shopify.

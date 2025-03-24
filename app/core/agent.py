@@ -25,52 +25,48 @@ class SalesAnalystAgent:
         self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
         self.system_prompt = """
 You are an expert e-commerce Sales Analyst AI assistant that helps online store owners understand their sales data.
-Your goal is to provide clear, concise, and actionable insights based on their sales data.
+Your goal is to provide clear, concise, and actionable insights based on the available sales data.
 
 RULES:
-- NEVER use placeholder names like "Region A", "Region B", "Product X", "Product Y". Always use actual region/product names.
-- NEVER report on data that is not provided to you, especially for regions or products.
-- NEVER provide analyses where data is missing - instead explicitly acknowledge what data is missing.
-- ONLY use the numerical data provided to you - don't fabricate numbers.
+- NEVER use placeholder names like "Region A", "Region B", "Product X", "Product Y". Always use the actual region/product names.
+- NEVER report on data that is not provided to you. If data is missing, explicitly state that.
+- ONLY use the numerical data provided – do not fabricate any numbers.
 - Be precise with currency formatting (always use $x,xxx.xx format for US dollars).
 - Use consistent decimal precision for percentages (always show 2 decimal places).
-- If a query asks about "this month", it specifically means the current calendar month, not the last 30 days.
+- If a query asks about "this month", it refers to the current calendar month, not the last 30 days.
+- IMPORTANT: If the query intent includes a query_type of "bottom_products" (or "worst products"), then report the products with the lowest revenue (bottom products). If the intent is "fastest_growing", then report the products with the highest positive growth rate and include their growth percentages.
+- In compound queries, address each sub-request separately and clearly label each section of the response.
 
 RESPONSE FORMAT:
-1. Start with a very brief, 1-sentence summary of the key insight
-2. Provide relevant metrics with specific numbers and time period
-3. If available, include comparative data (vs previous period)
-4. For top products/regions, list actual names with specific values
-5. End with 2-3 concise, actionable recommendations 
+1. Start with a very brief, one-sentence summary of the key insight.
+2. Provide relevant metrics with specific numbers and time periods.
+3. Include a section for product performance. If the intent is for "bottom_products", list the worst-performing products; if "fastest_growing", list the fastest growing products with growth percentages; otherwise, list the top products by revenue.
+4. End with 2-3 concise, actionable recommendations.
 
 TONE:
-- Professional but conversational
-- Confident in your analysis of available data
-- Transparent about missing or unavailable data
-- Focused on business impact rather than technical details
+- Professional but conversational.
+- Confident in your analysis of the available data.
+- Transparent about any missing or unavailable data.
+- Focus on business impact rather than technical details.
 """
-        # Initialize LangChain components
         self.llm = ChatOpenAI(
-            model_name="gpt-3.5-turbo",
+            model_name="gpt-3.5-turbo",  # Using GPT-3.5 as requested.
             temperature=0.2,
             openai_api_key=settings.OPENAI_API_KEY
         )
         
-        # Create a properly configured prompt template
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
             MessagesPlaceholder(variable_name="history"),
             ("human", "{input}")
         ])
         
-        # Create memory with correctly named variables
         self.memory = ConversationBufferMemory(
             return_messages=True, 
             memory_key="history",
             input_key="input"
         )
         
-        # Configure the conversation chain
         self.chain = ConversationChain(
             llm=self.llm,
             prompt=self.prompt,
@@ -120,31 +116,32 @@ TONE:
             formatted_text += f"- Orders Change: {format_percentage(comparison.get('orders_change', 0))} ({comparison.get('previous_orders', 0)} previously)\n"
             formatted_text += f"- AOV Change: {format_percentage(comparison.get('aov_change', 0))} ({format_currency(comparison.get('previous_aov', 0))} previously)\n"
         
-        # Get the actual top products limit from data or use provided default
-        actual_limit = sales_data.get("top_products_count", top_products_limit)
+        # Decide which product section to show based on query type
+        query_type = sales_data.get("query_type", "top_products")
+        if query_type == "bottom_products":
+            products = sales_data.get("bottom_products", [])
+            section_title = "BOTTOM PRODUCTS BY REVENUE:"
+        elif query_type == "fastest_growing":
+            products = sales_data.get("growing_products", [])
+            section_title = "FASTEST GROWING PRODUCTS (with Growth Rates):"
+        else:
+            products = sales_data.get("top_products", [])
+            section_title = "TOP PRODUCTS BY REVENUE:"
         
-        # Add top products if available
-        top_products = sales_data.get("top_products", [])
-        if top_products:
-            count = len(top_products)
-            formatted_text += f"\nTOP {count} PRODUCTS BY REVENUE:\n"
-            for i, product in enumerate(top_products, 1):
+        if products:
+            formatted_text += f"\n{section_title}\n"
+            for i, product in enumerate(products, 1):
                 quantity = product.get("quantity") or product.get("units_sold") or 0
                 revenue = product.get("revenue", 0)
-                # Calculate contribution percentage
-                percentage = (revenue / summary.get('total_sales', 1)) * 100
-                avg_price = revenue / quantity if quantity else 0
-                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} ({percentage:.2f}% of total, {quantity} units, avg. {format_currency(avg_price)} each)\n"
-        
-        # Add bottom/declining products if available and requested
-        declining_products = sales_data.get("declining_products", [])
-        if declining_products:
-            formatted_text += "\nDECLINING PRODUCTS:\n"
-            for i, product in enumerate(declining_products[:actual_limit], 1):
-                quantity = product.get("quantity", 0)
-                revenue = product.get("revenue", 0)
-                growth_rate = product.get("growth_rate", 0)
-                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} (Decline Rate: {format_percentage(growth_rate)}, {quantity} units sold)\n"
+                if query_type == "fastest_growing":
+                    growth = product.get("growth_rate", 0) * 100
+                    formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} (Growth: {growth:.2f}%)\n"
+                else:
+                    percentage = (revenue / summary.get('total_sales', 1)) * 100
+                    avg_price = revenue / quantity if quantity else 0
+                    formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} ({percentage:.2f}% of total, {quantity} units, avg. {format_currency(avg_price)} each)\n"
+        else:
+            formatted_text += "\nNo product data available for the requested section.\n"
         
         # Add geographic data if available
         geo_data = sales_data.get("geo_data", [])
@@ -152,22 +149,12 @@ TONE:
             formatted_text += "\nGEOGRAPHIC DISTRIBUTION:\n"
             for i, country in enumerate(geo_data, 1):
                 formatted_text += f"{i}. {country.get('country', 'Unknown')}: {format_currency(country.get('total_sales', 0))} ({country.get('total_orders', 0)} orders)\n"
-                
-                # Add regions for each country with better formatting
                 regions = country.get("regions", [])
                 for j, region in enumerate(regions, 1):
                     formatted_text += f"   {i}.{j} {region.get('name', 'Unknown')}: {format_currency(region.get('total_sales', 0))} ({region.get('total_orders', 0)} orders)\n"
-                    
-                    # Add cities for each region
                     cities = region.get("cities", [])
-                    for k, city in enumerate(cities[:3], 1):  # Show top 3 cities per region
+                    for k, city in enumerate(cities[:3], 1):
                         formatted_text += f"      {i}.{j}.{k} {city.get('name', 'Unknown')}: {format_currency(city.get('total_sales', 0))} ({city.get('total_orders', 0)} orders)\n"
-                        
-                        # Add districts if available
-                        districts = city.get("districts", [])
-                        for l, district in enumerate(districts[:2], 1):  # Show top 2 districts per city
-                            formatted_text += f"         {i}.{j}.{k}.{l} {district.get('name', 'Unknown')}: {format_currency(district.get('total_sales', 0))} ({district.get('total_orders', 0)} orders)\n"
-        
         # Add anomalies if available
         anomalies = sales_data.get("anomalies", [])
         if anomalies:
@@ -187,15 +174,6 @@ TONE:
     ) -> str:
         """
         Analyze a user query and generate a response.
-        
-        Args:
-            query: User's question or command.
-            user_context: Context about the user (name, store, preferences).
-            sales_data: Optional sales data to include in context.
-            intent: Optional dictionary of extracted query intent.
-        
-        Returns:
-            str: Response to the user.
         """
         try:
             context_prompt = f"""
@@ -206,7 +184,7 @@ Here is context about the user and their store:
 - Timezone: {user_context.get('timezone', 'UTC')}
 """
             if intent:
-                intent_prompt = f"Extracted query intent:\n{json.dumps(intent, indent=2)}"
+                intent_prompt = f"Extracted query intent:\n{json.dumps(intent, indent=2, default=str)}"
                 context_prompt += f"\n{intent_prompt}"
             
             if sales_data:
@@ -216,17 +194,13 @@ Here is context about the user and their store:
                 
                 data_availability = f"""
 Data Availability Notes:
-- Geographic data: {'Available' if has_geo_data else 'Not available'}
-- Growing products data: {'Available' if has_growing_products else 'Not available'}
-- Declining products data: {'Available' if has_declining_products else 'Not available'}
+- Geographic data: {"Available" if has_geo_data else "Not available"}
+- Growing products data: {"Available" if has_growing_products else "Not available"}
+- Declining products data: {"Available" if has_declining_products else "Not available"}
 """
                 context_prompt += data_availability
                 
-                top_limit = 5
-                if intent and isinstance(intent.get("top_products"), int):
-                    top_limit = intent["top_products"]
-                    
-                sales_context = self.format_sales_data(sales_data, top_products_limit=top_limit)
+                sales_context = self.format_sales_data(sales_data, top_products_limit=intent.get("top_products_count", 5))
                 context_prompt += f"\n\nHere is the relevant sales data:\n{sales_context}"
                 
             full_query = f"{context_prompt}\n\nUser question: {query}"
@@ -236,13 +210,11 @@ Data Availability Notes:
         except Exception as e:
             logger.error(f"Error getting response from LangChain: {e}")
             logger.exception(e)
-            # Fallback to OpenAI direct API if LangChain fails
             try:
                 messages = [
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": f"{context_prompt}\n\n{query}"}
                 ]
-                
                 response = self.client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=messages,
@@ -266,13 +238,6 @@ Data Availability Notes:
     async def generate_daily_summary(self, sales_data: Dict[str, Any], store_name: str) -> str:
         """
         Generate a daily sales summary.
-        
-        Args:
-            sales_data: Sales data dictionary.
-            store_name: Name of the store.
-        
-        Returns:
-            str: Daily summary text.
         """
         summary_prompt = f"""
 As an AI Sales Analyst, write a concise daily sales summary for {store_name}.
@@ -295,7 +260,7 @@ and top-performing products. End with one or two brief recommendations based on 
                     {"role": "user", "content": summary_prompt}
                 ]
                 response = self.client.chat.completions.create(
-                    model="gpt-4",
+                    model="gpt-3.5-turbo",
                     messages=messages,
                     temperature=0.2
                 )
@@ -312,13 +277,6 @@ and top-performing products. End with one or two brief recommendations based on 
     async def generate_anomaly_alert(self, anomaly_data: Dict[str, Any], store_name: str) -> str:
         """
         Generate an anomaly alert message.
-        
-        Args:
-            anomaly_data: Anomaly data dictionary.
-            store_name: Name of the store.
-        
-        Returns:
-            str: Anomaly alert text.
         """
         anomaly_type = anomaly_data.get("type", "sales")
         anomaly_value = anomaly_data.get("value", 0)
@@ -351,7 +309,7 @@ Start with "🚨 ALERT:" followed by a brief but informative message.
                     {"role": "user", "content": alert_prompt}
                 ]
                 response = self.client.chat.completions.create(
-                    model="gpt-4",
+                    model="gpt-3.5-turbo",
                     messages=messages,
                     temperature=0.2
                 )
