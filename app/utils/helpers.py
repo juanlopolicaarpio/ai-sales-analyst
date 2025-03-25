@@ -104,12 +104,13 @@ def format_percentage(value: float, decimal_places: int = 2) -> str:
 
 def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
     """
-    Get start and end dates for common date ranges.
+    Get start and end dates for common date ranges with improved dynamic handling.
     
     Args:
-        range_type: "today", "yesterday", "last_7_days", "last_30_days", "this_month", "last_month"
-                   or "specific_month_YYYY_MM" for a specific month
-                   or "specific_date_YYYY_MM_DD" for a specific date
+        range_type: Supports multiple formats:
+                   - Standard: "today", "yesterday", "this_month", "last_month"
+                   - Dynamic periods: "last_X_days", "last_X_weeks", "last_X_months", "last_X_years"
+                   - Specific periods: "specific_month_YYYY_MM", "specific_date_YYYY_MM_DD"
         timezone: User's timezone
     
     Returns:
@@ -118,6 +119,7 @@ def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
     tz = pytz.timezone(timezone)
     now = datetime.now(tz)
     
+    # Handle standard time ranges
     if range_type == "today":
         start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
         end_date = now
@@ -126,14 +128,6 @@ def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
         yesterday = now - timedelta(days=1)
         start_date = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
         end_date = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
-    
-    elif range_type == "last_7_days":
-        start_date = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
-        end_date = now
-    
-    elif range_type == "last_30_days":
-        start_date = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
-        end_date = now
     
     elif range_type == "this_month":
         start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -144,8 +138,39 @@ def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
         start_date = last_month.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         end_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(microseconds=1)
     
+    # Handle dynamic time ranges with regex: "last_X_days", "last_X_weeks", etc.
+    elif re.match(r'^last_\d+_(days|weeks|months|years)$', range_type):
+        parts = range_type.split('_')
+        try:
+            num = int(parts[1])
+            unit = parts[2]
+            
+            if unit == "days":
+                start_date = (now - timedelta(days=num)).replace(hour=0, minute=0, second=0, microsecond=0)
+            elif unit == "weeks":
+                start_date = (now - timedelta(days=num * 7)).replace(hour=0, minute=0, second=0, microsecond=0)
+            elif unit == "months":
+                # Get same day N months ago
+                month = now.month - num % 12
+                year = now.year - num // 12
+                if month <= 0:
+                    month += 12
+                    year -= 1
+                start_date = now.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+            elif unit == "years":
+                start_date = now.replace(year=now.year - num, day=1, month=1, hour=0, minute=0, second=0, microsecond=0)
+            
+            end_date = now
+            logger.info(f"Calculated dynamic range for {range_type}: {start_date} to {end_date}")
+            
+        except (ValueError, IndexError) as e:
+            logger.error(f"Error parsing dynamic range {range_type}: {e}")
+            # Default to last 7 days if there's a parsing error
+            start_date = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = now
+    
+    # Handle specific month format
     elif range_type.startswith("specific_month_"):
-        # Format: specific_month_YYYY_MM
         try:
             year, month = map(int, range_type.split("_")[2:])
             logger.info(f"Processing specific month: {year}-{month}")
@@ -164,9 +189,8 @@ def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
             start_date = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
             end_date = now
     
-    # NEW: Handle specific date
+    # Handle specific date format
     elif range_type.startswith("specific_date_"):
-        # Format: specific_date_YYYY_MM_DD
         try:
             year, month, day = map(int, range_type.split("_")[2:])
             logger.info(f"Processing specific date: {year}-{month}-{day}")
@@ -184,14 +208,60 @@ def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
             start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
             end_date = now
     
-    else:
-        logger.warning(f"Unknown date range type: {range_type}, defaulting to last 7 days")
-        # Default to last 7 days if unknown range type
+    # For backward compatibility with "last_7_days", "last_30_days" etc.
+    elif range_type == "last_7_days":
         start_date = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
         end_date = now
+    elif range_type == "last_30_days":
+        start_date = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date = now
+    
+    # If all else fails, try to extract a number from the pattern
+    else:
+        # Try to match patterns like "last_X_weeks" where X is a number
+        match = re.search(r'last_(\d+)_(\w+)', range_type)
+        if match:
+            try:
+                num = int(match.group(1))
+                unit = match.group(2)
+                
+                if unit.endswith('s'):  # Remove plural
+                    unit = unit[:-1]
+                
+                if unit == "day":
+                    start_date = (now - timedelta(days=num)).replace(hour=0, minute=0, second=0, microsecond=0)
+                elif unit == "week":
+                    start_date = (now - timedelta(weeks=num)).replace(hour=0, minute=0, second=0, microsecond=0)
+                elif unit == "month":
+                    # Handle month subtraction properly
+                    month = now.month - num % 12
+                    year = now.year - num // 12
+                    if month <= 0:
+                        month += 12
+                        year -= 1
+                    start_date = now.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+                elif unit == "year":
+                    start_date = now.replace(year=now.year - num, hour=0, minute=0, second=0, microsecond=0)
+                else:
+                    # Default to days if unit is not recognized
+                    start_date = (now - timedelta(days=num)).replace(hour=0, minute=0, second=0, microsecond=0)
+                    
+                end_date = now
+                logger.info(f"Extracted dynamic range from pattern {range_type}: {num} {unit}(s), {start_date} to {end_date}")
+            except (ValueError, IndexError) as e:
+                logger.error(f"Error extracting from pattern {range_type}: {e}")
+                # Default to 7 days
+                start_date = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+                end_date = now
+        else:
+            logger.warning(f"Unknown date range type: {range_type}, defaulting to last 7 days")
+            # Default to last 7 days if unknown range type
+            start_date = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = now
     
     # Convert to UTC
     return start_date.astimezone(pytz.UTC), end_date.astimezone(pytz.UTC)
+
 def extract_query_intent(text: str) -> Dict[str, Any]:
     """
     Extract the intent and parameters from a user query.

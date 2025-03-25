@@ -30,17 +30,19 @@ Your goal is to provide clear, concise, and actionable insights based on the ava
 RULES:
 - NEVER use placeholder names like "Region A", "Region B", "Product X", "Product Y". Always use the actual region/product names.
 - NEVER report on data that is not provided to you. If data is missing, explicitly state that.
+- NEVER say data is not provided when it actually is present in the input. Always check all sections of the data thoroughly.
 - ONLY use the numerical data provided – do not fabricate any numbers.
 - Be precise with currency formatting (always use $x,xxx.xx format for US dollars).
 - Use consistent decimal precision for percentages (always show 2 decimal places).
 - If a query asks about "this month", it refers to the current calendar month, not the last 30 days.
-- IMPORTANT: If the query intent includes a query_type of "bottom_products" (or "worst products"), then report the products with the lowest revenue (bottom products). If the intent is "fastest_growing", then report the products with the highest positive growth rate and include their growth percentages.
+- IMPORTANT: If the query_type is "bottom_products", look for data in the "bottom_products" field which contains the products with the lowest revenue.
+- IMPORTANT: If the query_type is "declining_products" or mentions declining products, look for data in the "declining_products" field which contains products with negative growth rates.
 - In compound queries, address each sub-request separately and clearly label each section of the response.
 
 RESPONSE FORMAT:
 1. Start with a very brief, one-sentence summary of the key insight.
 2. Provide relevant metrics with specific numbers and time periods.
-3. Include a section for product performance. If the intent is for "bottom_products", list the worst-performing products; if "fastest_growing", list the fastest growing products with growth percentages; otherwise, list the top products by revenue.
+3. Include a section for the requested product performance (bottom products or declining products) with actual values.
 4. End with 2-3 concise, actionable recommendations.
 
 TONE:
@@ -116,32 +118,36 @@ TONE:
             formatted_text += f"- Orders Change: {format_percentage(comparison.get('orders_change', 0))} ({comparison.get('previous_orders', 0)} previously)\n"
             formatted_text += f"- AOV Change: {format_percentage(comparison.get('aov_change', 0))} ({format_currency(comparison.get('previous_aov', 0))} previously)\n"
         
-        # Decide which product section to show based on query type
+        # Get the query type to determine which sections to show
         query_type = sales_data.get("query_type", "top_products")
-        if query_type == "bottom_products":
-            products = sales_data.get("bottom_products", [])
-            section_title = "BOTTOM PRODUCTS BY REVENUE:"
-        elif query_type == "fastest_growing":
-            products = sales_data.get("growing_products", [])
-            section_title = "FASTEST GROWING PRODUCTS (with Growth Rates):"
-        else:
-            products = sales_data.get("top_products", [])
-            section_title = "TOP PRODUCTS BY REVENUE:"
         
-        if products:
-            formatted_text += f"\n{section_title}\n"
-            for i, product in enumerate(products, 1):
+        # Always include top products section
+        top_products = sales_data.get("top_products", [])
+        if top_products:
+            formatted_text += "\nTOP PRODUCTS BY REVENUE:\n"
+            for i, product in enumerate(top_products[:top_products_limit], 1):
                 quantity = product.get("quantity") or product.get("units_sold") or 0
                 revenue = product.get("revenue", 0)
-                if query_type == "fastest_growing":
-                    growth = product.get("growth_rate", 0) * 100
-                    formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} (Growth: {growth:.2f}%)\n"
-                else:
-                    percentage = (revenue / summary.get('total_sales', 1)) * 100
-                    avg_price = revenue / quantity if quantity else 0
-                    formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} ({percentage:.2f}% of total, {quantity} units, avg. {format_currency(avg_price)} each)\n"
-        else:
-            formatted_text += "\nNo product data available for the requested section.\n"
+                percentage = (revenue / summary.get('total_sales', 1)) * 100
+                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} ({percentage:.2f}% of total, {quantity} units)\n"
+        
+        # Include bottom products if available or if this is a bottom products query
+        bottom_products = sales_data.get("bottom_products", [])
+        if bottom_products:
+            formatted_text += "\nBOTTOM PRODUCTS BY REVENUE:\n"
+            for i, product in enumerate(bottom_products[:top_products_limit], 1):
+                quantity = product.get("quantity") or product.get("units_sold") or 0
+                revenue = product.get("revenue", 0)
+                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} ({quantity} units)\n"
+        
+        # Include declining products if available or if this is a declining products query
+        declining_products = sales_data.get("declining_products", [])
+        if declining_products:
+            formatted_text += "\nDECLINING PRODUCTS:\n"
+            for i, product in enumerate(declining_products[:top_products_limit], 1):
+                growth = product.get("growth_rate", 0) * 100
+                revenue = product.get("revenue", 0)
+                formatted_text += f"{i}. {product.get('name', 'Unknown')}: {format_currency(revenue)} (Growth Rate: {growth:.2f}%)\n"
         
         # Add geographic data if available
         geo_data = sales_data.get("geo_data", [])
@@ -155,6 +161,7 @@ TONE:
                     cities = region.get("cities", [])
                     for k, city in enumerate(cities[:3], 1):
                         formatted_text += f"      {i}.{j}.{k} {city.get('name', 'Unknown')}: {format_currency(city.get('total_sales', 0))} ({city.get('total_orders', 0)} orders)\n"
+        
         # Add anomalies if available
         anomalies = sales_data.get("anomalies", [])
         if anomalies:
@@ -162,8 +169,8 @@ TONE:
             for anomaly in anomalies:
                 formatted_text += f"- {anomaly.get('description', '')}\n"
         
-        return formatted_text
-    
+        return formatted_text   
+ 
     async def analyze_query(
         self, 
         query: str, 
@@ -191,12 +198,14 @@ Here is context about the user and their store:
                 has_geo_data = sales_data.get("geo_data") and len(sales_data.get("geo_data", [])) > 0
                 has_growing_products = sales_data.get("growing_products") and len(sales_data.get("growing_products", [])) > 0
                 has_declining_products = sales_data.get("declining_products") and len(sales_data.get("declining_products", [])) > 0
+                has_bottom_products = sales_data.get("bottom_products") and len(sales_data.get("bottom_products", [])) > 0
                 
                 data_availability = f"""
 Data Availability Notes:
 - Geographic data: {"Available" if has_geo_data else "Not available"}
 - Growing products data: {"Available" if has_growing_products else "Not available"}
 - Declining products data: {"Available" if has_declining_products else "Not available"}
+- Bottom products data: {"Available" if has_bottom_products else "Not available"}
 """
                 context_prompt += data_availability
                 

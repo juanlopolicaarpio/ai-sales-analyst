@@ -216,7 +216,9 @@ Ensure that the output is valid JSON and is an array. Do not include any markdow
                     intent["time_range"],
                     user_context["timezone"],
                     include_geo_data=intent.get("include_geo_data", False),
-                    top_products_limit=intent.get("top_products_count", 5),
+                    top_products_limit=intent.get("top_products_count", 10),
+                    bottom_products_limit=intent.get("top_products_count", 10),  # Use same limit by default
+                    query_type=intent.get("query_type", "top_products"),  # Pass the query_type
                     specific_start_date=specific_start,
                     specific_end_date=specific_end
                 )

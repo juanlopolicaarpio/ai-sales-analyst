@@ -25,8 +25,9 @@ async def get_sales_data(
     include_conversion_rate: bool = False,
     specific_start_date: Optional[datetime] = None,
     specific_end_date: Optional[datetime] = None,
-    top_products_limit: int = 10,  # Changed default to 10
-    bottom_products_limit: int = 10,  # Added parameter with default of 10
+    top_products_limit: int = 10,
+    bottom_products_limit: int = 10,
+    query_type: str = "top_products"  # Added query_type parameter
 ) -> Dict[str, Any]:
     """
     Get sales data for a specific time range.
@@ -42,6 +43,7 @@ async def get_sales_data(
         specific_end_date: Custom end date (for custom time range)
         top_products_limit: Maximum number of top products to return
         bottom_products_limit: Maximum number of bottom products to return
+        query_type: Type of query (top_products, bottom_products, fastest_growing)
 
     Returns:
         dict: Sales data
@@ -151,30 +153,61 @@ async def get_sales_data(
         else:
             product["growth_rate"] = 1.0  # 100% growth for new products
 
-    # Sort products by revenue
+    # Aggregate products by name to avoid duplicates
+    product_name_sales = {}
+    for product_id, product in product_sales.items():
+        name = product["name"]
+        if name not in product_name_sales:
+            product_name_sales[name] = {
+                "name": name,
+                "revenue": 0,
+                "quantity": 0,
+                "growth_rate": 0
+            }
+        product_name_sales[name]["revenue"] += product["revenue"]
+        product_name_sales[name]["quantity"] += product["quantity"]
+        
+        # Calculate weighted average growth rate
+        if "growth_rate" in product:
+            old_revenue = product_name_sales[name]["revenue"] - product["revenue"]
+            total_revenue = product_name_sales[name]["revenue"]
+            
+            if total_revenue > 0:
+                product_name_sales[name]["growth_rate"] = (
+                    (product_name_sales[name]["growth_rate"] * old_revenue) + 
+                    (product["growth_rate"] * product["revenue"])
+                ) / total_revenue
+            else:
+                product_name_sales[name]["growth_rate"] = product["growth_rate"]
+
+    # Convert aggregated products to list
+    aggregated_products = list(product_name_sales.values())
+
+    # Sort products by revenue (high to low)
     sorted_by_revenue = sorted(
-        product_sales.values(),
+        aggregated_products,
         key=lambda x: x["revenue"],
         reverse=True
     )
 
-    # Sort products by growth rate
+    # Sort products by growth rate (high to low)
     sorted_by_growth = sorted(
-        product_sales.values(),
+        aggregated_products,
         key=lambda x: x.get("growth_rate", 0),
         reverse=True
     )
 
-    # Get top/bottom products by revenue
+    # Get top products by revenue
     top_products = sorted_by_revenue[:top_products_limit] if sorted_by_revenue else []
     
-    # Handle bottom products - make sure we have enough products
+    # Get bottom products by revenue
     if len(sorted_by_revenue) >= bottom_products_limit:
-        bottom_products = sorted_by_revenue[-bottom_products_limit:]
-        bottom_products.reverse()  # Reverse to show worst performer first
+        # Get the products with lowest revenue
+        sorted_by_lowest_revenue = sorted(aggregated_products, key=lambda x: x["revenue"])
+        bottom_products = sorted_by_lowest_revenue[:bottom_products_limit]
     else:
-        bottom_products = sorted_by_revenue.copy()  # Copy all if fewer than limit
-        bottom_products.reverse()   # Reverse to show worst performer first
+        # Copy all if fewer than limit and sort by ascending revenue
+        bottom_products = sorted(aggregated_products, key=lambda x: x["revenue"])
 
     # Get growing and declining products by growth rate
     growing_products = [p for p in sorted_by_growth if p.get("growth_rate", 0) > 0][:top_products_limit]
@@ -192,6 +225,11 @@ async def get_sales_data(
     logger.info(f"Number of top products identified: {len(top_products)}")
     for i, product in enumerate(top_products[:5], 1):
         logger.info(f"Top product {i}: {product.get('name', 'Unknown')} - Revenue: {product.get('revenue', 0):.2f}")
+
+    # Log bottom products for debugging
+    logger.info(f"Number of bottom products identified: {len(bottom_products)}")
+    for i, product in enumerate(bottom_products[:3], 1):
+        logger.info(f"Bottom product {i}: {product.get('name', 'Unknown')} - Revenue: {product.get('revenue', 0):.2f}")
 
     # Also log declining products if available
     if declining_products:
@@ -271,8 +309,9 @@ async def get_sales_data(
             "previous_orders": prev_total_orders,
             "previous_aov": prev_average_order_value,
         },
-        "top_products_count": top_products_limit,  # Include the requested count
-        "bottom_products_count": bottom_products_limit,  # Include the requested count
+        "query_type": query_type,  # Include query_type in the response
+        "top_products_count": top_products_limit,
+        "bottom_products_count": bottom_products_limit,
         "top_products": top_products,
         "bottom_products": bottom_products,
         "growing_products": growing_products,
@@ -281,8 +320,6 @@ async def get_sales_data(
         "conversion": conversion_data,
         "anomalies": [],  # This would be populated by the anomaly detection service
     }
-
-
 def extract_geo_data_from_orders(orders):
     """
     Extract geographic data directly from order data.
