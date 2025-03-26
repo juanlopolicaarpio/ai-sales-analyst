@@ -136,6 +136,7 @@ def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
     elif range_type == "last_month":
         last_month = now.replace(day=1) - timedelta(days=1)
         start_date = last_month.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        # End at last day of previous month at 23:59:59
         end_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(microseconds=1)
     
     # Handle dynamic time ranges with regex: "last_X_days", "last_X_weeks", etc.
@@ -198,7 +199,7 @@ def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
             # Start at beginning of the day
             start_date = datetime(year, month, day, 0, 0, 0, tzinfo=tz)
             
-            # End at end of the day
+            # End at end of the day - ensure we include the full day
             end_date = datetime(year, month, day, 23, 59, 59, 999999, tzinfo=tz)
                 
             logger.info(f"Date range for {range_type}: {start_date} to {end_date}")
@@ -259,9 +260,13 @@ def get_date_range(range_type: str, timezone: str = "UTC") -> tuple:
             start_date = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
             end_date = now
     
+    # Final check: ensure end_date includes the full day if it's at midnight
+    if end_date.hour == 0 and end_date.minute == 0 and end_date.second == 0 and end_date != now:
+        end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+        logger.info(f"Adjusted end date to include full day: {end_date}")
+    
     # Convert to UTC
     return start_date.astimezone(pytz.UTC), end_date.astimezone(pytz.UTC)
-
 def extract_query_intent(text: str) -> Dict[str, Any]:
     """
     Extract the intent and parameters from a user query.

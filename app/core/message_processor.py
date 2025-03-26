@@ -36,11 +36,14 @@ class MessageProcessor:
             from langchain.chat_models import ChatOpenAI
             from langchain.prompts import PromptTemplate
             from app.config import settings
+            from datetime import datetime
+            
+            current_year = datetime.now().year
             
             # Updated prompt instructing extraction of multiple sub-requests if needed.
-            template = """
+            template = f"""
 Extract all sales analytics requests from the following compound query:
-"{query}"
+"{{query}}"
 
 Return a JSON array where each element is an object representing one request. 
 Each object must include the following fields:
@@ -53,6 +56,18 @@ Each object must include the following fields:
 - include_conversion_rate: a boolean
 - comparison: a boolean
 - raw_query: the original query text
+
+VERY IMPORTANT: Always use the current year ({current_year}) for any dates unless explicitly mentioned otherwise. 
+
+For date ranges like "March 1-8", use:
+- specific_start_date: "{current_year}-03-01T00:00:00"
+- specific_end_date: "{current_year}-03-08T23:59:59"
+
+For single-day queries like "March 10 sales", use:
+- specific_start_date: "{current_year}-03-10T00:00:00"
+- specific_end_date: "{current_year}-03-10T23:59:59"
+
+Always make sure end dates include the full day by using 23:59:59 as the time.
 
 Ensure that the output is valid JSON and is an array. Do not include any markdown formatting.
 """
@@ -91,16 +106,15 @@ Ensure that the output is valid JSON and is an array. Do not include any markdow
             default_intent = {
                 "time_range": "this_month",
                 "primary_metric": "sales",
-                "top_products": any(phrase in message_text.lower() for phrase in ["top products", "best selling"]),
+                "query_type": "top_products",
                 "top_products_count": 5,
-                "bottom_products": any(phrase in message_text.lower() for phrase in ["bottom products"]),
                 "include_geo_data": "region" in message_text.lower() or "country" in message_text.lower(),
                 "include_conversion_rate": "conversion" in message_text.lower(),
                 "comparison": "compare" in message_text.lower() or "versus" in message_text.lower(),
                 "raw_query": message_text
             }
             return [default_intent]
-    
+            
     @staticmethod
     async def process_message(
         db: AsyncSession,
@@ -191,8 +205,62 @@ Ensure that the output is valid JSON and is an array. Do not include any markdow
         if not isinstance(extracted_intents, list):
             extracted_intents = [extracted_intents]
         
-        # (Optional) Further detect date ranges manually for each sub-intent if needed...
-        # Here you could add extra processing if an intent lacks specific dates.
+        # Process dates for each intent
+        for intent in extracted_intents:
+            # Fix the dates - convert string dates to datetime objects and update year if needed
+            if intent.get("time_range") == "custom":
+                try:
+                    # Handle specific_start_date
+                    if "specific_start_date" in intent:
+                        start_date_str = intent["specific_start_date"]
+                        if isinstance(start_date_str, str):
+                            import dateutil.parser
+                            from datetime import datetime
+                            
+                            # Parse the date string
+                            try:
+                                start_date = dateutil.parser.parse(start_date_str)
+                                
+                                # Update year to current year if it's not the current year
+                                current_year = datetime.now().year
+                                if start_date.year != current_year:
+                                    start_date = start_date.replace(year=current_year)
+                                
+                                # Convert to datetime object
+                                intent["specific_start_date"] = start_date
+                                logger.info(f"Converted start date to: {start_date}")
+                            except Exception as parse_error:
+                                logger.error(f"Error parsing start date: {parse_error}")
+                                intent["specific_start_date"] = None
+                    
+                    # Handle specific_end_date
+                    if "specific_end_date" in intent:
+                        end_date_str = intent["specific_end_date"]
+                        if isinstance(end_date_str, str):
+                            import dateutil.parser
+                            from datetime import datetime, time
+                            
+                            # Parse the date string
+                            try:
+                                end_date = dateutil.parser.parse(end_date_str)
+                                
+                                # Update year to current year if it's not the current year
+                                current_year = datetime.now().year
+                                if end_date.year != current_year:
+                                    end_date = end_date.replace(year=current_year)
+                                
+                                # Make sure end_date includes the whole day if time is midnight
+                                if end_date.hour == 0 and end_date.minute == 0 and end_date.second == 0:
+                                    end_date = datetime.combine(end_date.date(), time(23, 59, 59, 999999))
+                                
+                                # Convert to datetime object
+                                intent["specific_end_date"] = end_date
+                                logger.info(f"Converted end date to: {end_date}")
+                            except Exception as parse_error:
+                                logger.error(f"Error parsing end date: {parse_error}")
+                                intent["specific_end_date"] = None
+                except Exception as e:
+                    logger.error(f"Error processing dates for intent: {e}")
         
         # Build user context
         user_context = {
@@ -205,11 +273,13 @@ Ensure that the output is valid JSON and is an array. Do not include any markdow
         # Process each intent individually and collect responses
         responses = []
         for intent in extracted_intents:
-            # Fetch sales data using the intent’s parameters.
+            # Fetch sales data using the intent's parameters.
             try:
-                # Determine if custom dates are provided in the intent
+                # Get the specific dates
                 specific_start = intent.get("specific_start_date")
                 specific_end = intent.get("specific_end_date")
+                
+                # Pass them to get_sales_data
                 sales_data = await get_sales_data(
                     db,
                     str(store.id),
@@ -217,11 +287,12 @@ Ensure that the output is valid JSON and is an array. Do not include any markdow
                     user_context["timezone"],
                     include_geo_data=intent.get("include_geo_data", False),
                     top_products_limit=intent.get("top_products_count", 10),
-                    bottom_products_limit=intent.get("top_products_count", 10),  # Use same limit by default
-                    query_type=intent.get("query_type", "top_products"),  # Pass the query_type
+                    bottom_products_limit=intent.get("top_products_count", 10),
+                    query_type=intent.get("query_type", "top_products"),
                     specific_start_date=specific_start,
                     specific_end_date=specific_end
                 )
+                
                 # Update intent with additional info if needed
                 if sales_data:
                     intent["actual_top_products_count"] = len(sales_data.get("top_products", []))

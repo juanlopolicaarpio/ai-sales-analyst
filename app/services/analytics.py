@@ -27,7 +27,7 @@ async def get_sales_data(
     specific_end_date: Optional[datetime] = None,
     top_products_limit: int = 10,
     bottom_products_limit: int = 10,
-    query_type: str = "top_products"  # Added query_type parameter
+    query_type: str = "top_products"
 ) -> Dict[str, Any]:
     """
     Get sales data for a specific time range.
@@ -54,6 +54,12 @@ async def get_sales_data(
         end_date = specific_end_date
     else:
         start_date, end_date = get_date_range(time_range, timezone)
+
+    # Ensure end_date includes the full day if it doesn't already have a specific time
+    from datetime import time
+    if end_date.time() == time(0, 0, 0):  # If time component is midnight
+        end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+        logger.info(f"Adjusted end date to include full day: {end_date}")
 
     # Convert the date range to UTC before stripping timezone info
     if start_date.tzinfo:
@@ -89,6 +95,7 @@ async def get_sales_data(
     prev_result = await db.execute(prev_stmt)
     prev_orders = prev_result.scalars().all()
 
+    # Rest of the function remains unchanged...
     # Calculate summary metrics
     total_sales = sum(order.total_price for order in orders)
     total_orders = len(orders)
@@ -309,7 +316,7 @@ async def get_sales_data(
             "previous_orders": prev_total_orders,
             "previous_aov": prev_average_order_value,
         },
-        "query_type": query_type,  # Include query_type in the response
+        "query_type": query_type,
         "top_products_count": top_products_limit,
         "bottom_products_count": bottom_products_limit,
         "top_products": top_products,
@@ -318,7 +325,7 @@ async def get_sales_data(
         "declining_products": declining_products,
         "geo_data": geo_data,
         "conversion": conversion_data,
-        "anomalies": [],  # This would be populated by the anomaly detection service
+        "anomalies": [],
     }
 def extract_geo_data_from_orders(orders):
     """
