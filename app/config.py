@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     DEBUG: bool = Field(default=True)
     LOG_LEVEL: str = Field(default="INFO")
     SECRET_KEY: str = Field(...)
+    # Add these lines to your config.py file
+# Authentication settings
+    SECRET_KEY: str = Field(default="your-super-secret-key-change-this-in-production")
+    ACCESS_TOKEN_EXPIRE_DAYS: int = Field(default=7)
+    APP_URL: str = Field(default="http://localhost:8000")
+    FRONTEND_URL: str = Field(default="http://localhost:3000")
 
     # API Settings
     HOST: str = Field(default="0.0.0.0")

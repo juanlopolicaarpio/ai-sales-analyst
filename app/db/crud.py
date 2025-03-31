@@ -8,6 +8,19 @@ from sqlalchemy import func, and_, or_
 from app.db import models
 
 
+# Add this function to app/db/crud.py
+
+async def apply_tenant_filter(query, user_id=None, store_id=None):
+    """Apply tenant filter to query based on user or store ID."""
+    if store_id:
+        return query.filter(models.Store.id == store_id)
+    elif user_id:
+        return query.join(
+            models.store_user_association,
+            models.Store.id == models.store_user_association.c.store_id
+        ).filter(models.store_user_association.c.user_id == user_id)
+    return query
+
 # User CRUD operations
 async def get_user(db: AsyncSession, user_id: str):
     """Get a user by ID."""

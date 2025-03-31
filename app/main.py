@@ -11,7 +11,10 @@ from app.config import settings
 from app.db.database import get_async_db, Base, engine
 from app.api.routes import slack, whatsapp, email, health
 from app.utils.logger import logger
+# Add these imports to your app/main.py file
+from app.api.routes import auth, stores, preferences, shopify_auth
 
+# Add these lines where you include the other routers
 
 # Startup and shutdown events
 @asynccontextmanager
@@ -98,6 +101,10 @@ app.include_router(health.router, prefix="/api", tags=["Health"])
 app.include_router(slack.router, prefix="/api", tags=["Slack"])
 app.include_router(whatsapp.router, prefix="/api", tags=["WhatsApp"])
 app.include_router(email.router, prefix="/api", tags=["Email"])
+app.include_router(auth.router, prefix="/api", tags=["Authentication"])
+app.include_router(stores.router, prefix="/api", tags=["Stores"])
+app.include_router(preferences.router, prefix="/api", tags=["User Preferences"])
+app.include_router(shopify_auth.router, prefix="/api", tags=["Shopify Integration"])
 
 
 # Root endpoint
