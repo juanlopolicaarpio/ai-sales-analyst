@@ -17,9 +17,10 @@ const Navbar = () => {
         <div className="flex justify-between h-16">
           <div className="flex">
             <div className="flex-shrink-0 flex items-center">
-              <Link to="/" className="text-xl font-bold text-primary-600">
-                AI Sales Analyst
-              </Link>
+            <Link to="/" className="text-xl font-bold">
+  AgentiSales
+  <span className="text-indigo-600"> AI</span>
+</Link>
             </div>
             <div className="hidden sm:ml-6 sm:flex sm:space-x-8">
               {isAuthenticated && (
