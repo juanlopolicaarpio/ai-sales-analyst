@@ -12,32 +12,36 @@ from app.utils.logger import logger
 
 security = HTTPBearer()
 
+
 class RBACMiddleware:
     """Role-based access control middleware."""
-    
+
     @staticmethod
     async def verify_token(
         credentials: HTTPAuthorizationCredentials = Depends(security),
         db: AsyncSession = Depends(get_async_db)
     ) -> Dict[str, Any]:
-        """
-        Verify JWT token and return payload.
-        """
         try:
-            # Get token from authorization header
             token = credentials.credentials
-            
-            # Decode token
+
+            # Decode token with verification
             payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
-            
-            # Check if token is expired
-            if payload.get("exp") and time.time() > payload.get("exp"):
+
+            # Always check for expiration
+            if "exp" not in payload:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token has no expiration claim",
+                    headers={"WWW-Authenticate": "Bearer"}
+                )
+
+            if time.time() > payload.get("exp"):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Token has expired",
                     headers={"WWW-Authenticate": "Bearer"}
                 )
-            
+
             # Get user from database
             user_id = payload.get("user_id")
             if not user_id:
@@ -46,7 +50,7 @@ class RBACMiddleware:
                     detail="Invalid token payload",
                     headers={"WWW-Authenticate": "Bearer"}
                 )
-            
+
             user = await crud.get_user(db, user_id)
             if not user or not user.is_active:
                 raise HTTPException(
@@ -54,16 +58,16 @@ class RBACMiddleware:
                     detail="User not found or inactive",
                     headers={"WWW-Authenticate": "Bearer"}
                 )
-            
+
             # Add user to payload
             payload["user"] = {
                 "id": str(user.id),
                 "email": user.email,
                 "is_superuser": user.is_superuser
             }
-            
+
             return payload
-            
+
         except JWTError as e:
             logger.error(f"JWT error: {e}")
             raise HTTPException(
@@ -78,22 +82,20 @@ class RBACMiddleware:
                 detail="Authentication error",
                 headers={"WWW-Authenticate": "Bearer"}
             )
-    
+
     @staticmethod
     async def verify_store_access(
         store_id: str,
         token_payload: Dict[str, Any] = Depends(verify_token),
         db: AsyncSession = Depends(get_async_db)
     ) -> Dict[str, Any]:
-        """
-        Verify user has access to store.
-        """
+        """Verify user has access to store."""
         try:
             user_id = token_payload["user"]["id"]
-            
+
             # Get stores for user
             user_stores = await crud.get_stores_by_user(db, user_id)
-            
+
             # Check if user has access to store
             store = next((s for s in user_stores if str(s.id) == store_id), None)
             if not store:
@@ -101,14 +103,14 @@ class RBACMiddleware:
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You don't have access to this store"
                 )
-            
+
             # Add store to payload
             token_payload["store"] = {
                 "id": str(store.id),
                 "name": store.name,
                 "platform": store.platform
             }
-            
+
             return token_payload
         except Exception as e:
             logger.error(f"Store access verification error: {e}")
@@ -116,20 +118,17 @@ class RBACMiddleware:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access verification error"
             )
-    
+
     @staticmethod
     async def verify_admin(
         token_payload: Dict[str, Any] = Depends(verify_token)
     ) -> Dict[str, Any]:
-        """
-        Verify user is an admin.
-        """
+        """Verify user is an admin."""
         if not token_payload["user"].get("is_superuser"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Admin access required"
             )
-        
         return token_payload
 
 

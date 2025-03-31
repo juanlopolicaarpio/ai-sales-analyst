@@ -40,11 +40,13 @@ export const authAPI = {
     const response = await axios.post(`${API_URL}/token`, formData);
     return response.data;
   },
-  register: async (userData) => {
-    const response = await api.post('/register', userData);
-    return response.data;
-  },
-  getCurrentUser: async () => {
+// In frontend/src/utils/api.js
+// Update the authAPI.register to match backend expectations:
+
+register: async (userData) => {
+  const response = await api.post('/register', userData);
+  return response.data;
+},  getCurrentUser: async () => {
     const response = await api.get('/users/me');
     return response.data;
   }

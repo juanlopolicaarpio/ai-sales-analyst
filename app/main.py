@@ -50,14 +50,16 @@ app = FastAPI(
 )
 
 # Add CORS middleware
+# In app/main.py
+# Update CORS middleware:
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict to your frontend domain
+    allow_origins=[settings.FRONTEND_URL],  # Only allow your frontend domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # Add request ID middleware
 @app.middleware("http")

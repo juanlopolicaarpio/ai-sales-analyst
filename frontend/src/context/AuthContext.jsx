@@ -39,14 +39,28 @@ export const AuthProvider = ({ children }) => {
       toast.success('Login successful!');
       return true;
     } catch (error) {
-      console.error('Login failed:', error);
-      toast.error(error.response?.data?.detail || 'Login failed. Please check your credentials.');
+      const detail = error.response?.data?.detail;
+  
+      if (Array.isArray(detail)) {
+        // If backend sends an array of error messages
+        detail.forEach((msg, i) => toast.error(`(${i + 1}) ${msg}`));
+      } else if (typeof detail === 'string') {
+        toast.error(detail);
+      } else if (error.response?.data) {
+        const data = error.response.data;
+        Object.entries(data).forEach(([field, message]) => {
+          toast.error(`${field}: ${message}`);
+        });
+      } else {
+        toast.error('Login failed. Please check your credentials.');
+      }
+  
       return false;
     } finally {
       setLoading(false);
     }
   };
-
+  
   const register = async (userData) => {
     try {
       setLoading(true);
@@ -58,14 +72,27 @@ export const AuthProvider = ({ children }) => {
       toast.success('Registration successful!');
       return true;
     } catch (error) {
-      console.error('Registration failed:', error);
-      toast.error(error.response?.data?.detail || 'Registration failed. Please try again.');
+      const detail = error.response?.data?.detail;
+  
+      if (Array.isArray(detail)) {
+        detail.forEach((msg, i) => toast.error(`(${i + 1}) ${msg}`));
+      } else if (typeof detail === 'string') {
+        toast.error(detail);
+      } else if (error.response?.data) {
+        const data = error.response.data;
+        Object.entries(data).forEach(([field, message]) => {
+          toast.error(`${field}: ${message}`);
+        });
+      } else {
+        toast.error('Registration failed. Please try again.');
+      }
+  
       return false;
     } finally {
       setLoading(false);
     }
   };
-
+  
   const logout = () => {
     localStorage.removeItem('token');
     setToken(null);
