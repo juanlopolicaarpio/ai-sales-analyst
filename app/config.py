@@ -6,28 +6,27 @@ from typing import Optional
 
 class Settings(BaseSettings):
     # Application Settings
-    APP_NAME: str = "AI Sales Analyst"
-    APP_ENV: str = Field(default="development")
-    DEBUG: bool = Field(default=True)
-    LOG_LEVEL: str = Field(default="INFO")
-    SECRET_KEY: str = Field(...)
-    # Add these lines to your config.py file
-# Authentication settings
-    SECRET_KEY: str = Field(default="your-super-secret-key-change-this-in-production")
-    ACCESS_TOKEN_EXPIRE_DAYS: int = Field(default=7)
-    APP_URL: str = Field(default="http://localhost:8000")
-    FRONTEND_URL: str = Field(default="http://localhost:3000")
+    APP_NAME: str 
+    APP_ENV: str 
+    DEBUG: bool
+    LOG_LEVEL: str 
+    SECRET_KEY: str
+    
+    # Authentication settings
+    ACCESS_TOKEN_EXPIRE_DAYS: int
+    APP_URL: str
+    FRONTEND_URL: str
 
     # API Settings
-    HOST: str = Field(default="0.0.0.0")
-    PORT: int = Field(default=8000)
+    HOST: str
+    PORT: int
     
     # Database Settings
-    DATABASE_URL: str = Field(...)
+    DATABASE_URL: str
     DATABASE_TEST_URL: Optional[str] = None
     
     # OpenAI API
-    OPENAI_API_KEY: str = Field(...)
+    OPENAI_API_KEY: str
     
     # Slack Integration
     SLACK_BOT_TOKEN: Optional[str] = None
@@ -46,11 +45,11 @@ class Settings(BaseSettings):
     EMAIL_FROM: Optional[str] = None
     
     # Shopify Integration
-# Shopify Integration
     SHOPIFY_API_KEY: Optional[str] = None
     SHOPIFY_API_SECRET: Optional[str] = None
     SHOPIFY_STORE_URL: Optional[str] = None
-    SHOPIFY_ACCESS_TOKEN: Optional[str] = None    
+    SHOPIFY_ACCESS_TOKEN: Optional[str] = None
+    
     # AWS Settings
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
@@ -66,7 +65,7 @@ class Settings(BaseSettings):
 
 
 # Create settings instance
-settings = Settings()  # type: ignore
+settings = Settings()
 
 
 # Helper function to get database URL based on environment
