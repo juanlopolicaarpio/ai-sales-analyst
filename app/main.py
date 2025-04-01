@@ -11,10 +11,7 @@ from app.config import settings
 from app.db.database import get_async_db, Base, engine
 from app.api.routes import slack, whatsapp, email, health
 from app.utils.logger import logger
-# Add these imports to your app/main.py file
 from app.api.routes import auth, stores, preferences, shopify_auth
-
-# Add these lines where you include the other routers
 
 # Startup and shutdown events
 @asynccontextmanager
@@ -49,17 +46,57 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
-# In app/main.py
-# Update CORS middleware:
+# Add CORS middleware with expanded and properly configured allowed origins
+origins = [
+    # Allow requests from frontend URL configured in settings
+    settings.FRONTEND_URL,
+    
+    # Common development URLs - add any others your team might use
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+    "http://0.0.0.0:8080",
+    
+    # If using other ports or development servers, add them here
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    
+    # Add your production URLs here (without the protocol prefix)
+    # "https://your-production-domain.com",
+]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL, "http://127.0.0.1:8080"],  # Allow both formats
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# For development environments, allow any origin for easier testing
+# In production, this should be set to False and use a specific list of origins
+if settings.APP_ENV == "development" and settings.DEBUG:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allow all origins in development
+        allow_credentials=True,
+        allow_methods=["*"],  # Allow all methods
+        allow_headers=["*"],  # Allow all headers
+        expose_headers=["*"],  # Expose all headers
+    )
+else:
+    # More restrictive CORS for production
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        allow_headers=[
+            "Authorization", 
+            "Content-Type", 
+            "Accept", 
+            "Origin", 
+            "User-Agent",
+            "X-Requested-With",
+            "X-Request-ID"
+        ],
+        expose_headers=[
+            "X-Process-Time", 
+            "X-Request-ID"
+        ],
+        max_age=600,  # Cache preflight requests for 10 minutes
+    )
 
 # Add request ID middleware
 @app.middleware("http")
@@ -118,7 +155,7 @@ async def root():
 
 # Mount static files for the frontend
 # This assumes your frontend build output is in a 'static' directory
-# For development, you might not need this as the frontend will be served separately
+# For production, you might want to use a dedicated web server instead
 if os.path.exists("./static"):
     app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
