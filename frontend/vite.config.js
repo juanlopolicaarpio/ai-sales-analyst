@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 8080,  // Use a port that worked
-    host: '127.0.0.1',  // Explicitly use IP instead of localhost
+    host: 'localhost',  // Explicitly use IP instead of localhost
     strictPort: true,  // Don't try other ports if this one is taken
 
     proxy: {

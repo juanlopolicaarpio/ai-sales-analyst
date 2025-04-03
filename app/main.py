@@ -42,8 +42,6 @@ app.add_middleware(
     allow_origins=[
         settings.FRONTEND_URL,
         "http://localhost:8080",
-        "http://127.0.0.1:8080",
-        "http://0.0.0.0:8080",
         settings.APP_URL,
     ],
     allow_credentials=True,
