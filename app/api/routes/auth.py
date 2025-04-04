@@ -84,7 +84,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
         raise credentials_exception
     
     if token_data.user_id:
-        user = await crud.get_user(db, token_data.user_id)
+        # Convert the user_id from string to int (if your model uses int for id)
+        user = await crud.get_user(db, int(token_data.user_id))
     else:
         user = await crud.get_user_by_email(db, token_data.email)
         

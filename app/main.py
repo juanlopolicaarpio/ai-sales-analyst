@@ -12,6 +12,7 @@ from app.config import settings
 from app.db.database import get_async_db, Base, engine
 from app.api.routes import slack, whatsapp, email, health, auth, stores, preferences, shopify_auth
 from app.utils.logger import logger
+from app.api.middleware.error_handler import error_handler
 
 # Startup and shutdown events
 @asynccontextmanager
@@ -36,24 +37,26 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# ✅ Unified CORS middleware (no conditionals)
+# CORS middleware configuration - all allowed headers and methods
+# CORS middleware with specific origins instead of wildcard
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        settings.FRONTEND_URL,
         "http://localhost:8080",
-        settings.APP_URL,
+        "http://127.0.0.1:8080",
+        settings.FRONTEND_URL,
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "Accept",
-        "Origin",
+        "Authorization", 
+        "Content-Type", 
+        "Accept", 
+        "Origin", 
         "User-Agent",
         "X-Requested-With",
-        "X-Request-ID"
+        "X-Request-ID",
+        "Cache-Control"
     ],
     expose_headers=[
         "X-Process-Time",
@@ -61,7 +64,6 @@ app.add_middleware(
     ],
     max_age=600,
 )
-
 # Middleware to add request ID and log timing
 @app.middleware("http")
 async def add_request_id(request: Request, call_next):
@@ -85,11 +87,7 @@ async def add_request_id(request: Request, call_next):
 # Global exception handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception(f"Unhandled exception in {request.method} {request.url.path}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"}
-    )
+    return await error_handler(request, exc)
 
 
 # Include routers
