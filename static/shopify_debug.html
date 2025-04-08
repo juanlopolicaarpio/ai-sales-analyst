@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shopify Connection Debugger</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+        }
+        .card {
+            background-color: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .input-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        button {
+            background-color: #4f46e5;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #4338ca;
+        }
+        .info {
+            background-color: #f0f9ff;
+            border-left: 4px solid #3b82f6;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .warning {
+            background-color: #fffbeb;
+            border-left: 4px solid #f59e0b;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        code {
+            font-family: monospace;
+            background-color: #f1f1f1;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+        .result {
+            display: none;
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            background-color: #f8f9fa;
+            border: 1px solid #e9ecef;
+        }
+        .success {
+            background-color: #d1fae5;
+            border-color: #10b981;
+        }
+        .error {
+            background-color: #fee2e2;
+            border-color: #ef4444;
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>Shopify Connection Debugger</h1>
+    
+    <div class="warning">
+        <strong>⚠️ Debug Tool</strong> - This page is for debugging purposes only. It bypasses normal authentication to test the Shopify OAuth flow.
+    </div>
+    
+    <div class="card">
+        <h2>Connect to Shopify</h2>
+        <div class="input-group">
+            <label for="shop-url">Shopify Store URL:</label>
+            <input type="text" id="shop-url" placeholder="your-store.myshopify.com" />
+            <p><small>Just enter your store name or the full myshopify.com URL</small></p>
+        </div>
+        <button onclick="connectToShopify()">Connect to Shopify</button>
+    </div>
+    
+    <div class="info">
+        <h3>Debugging Process:</h3>
+        <ol>
+            <li>Enter your Shopify store URL above</li>
+            <li>Click "Connect to Shopify"</li>
+            <li>You'll be redirected to Shopify for authorization</li>
+            <li>After authorizing, check the <code>logs/shopify_debug</code> directory for detailed logs</li>
+        </ol>
+    </div>
+    
+    <div class="card">
+        <h2>Check Debug Logs</h2>
+        <p>Debug logs are stored in the <code>logs/shopify_debug</code> directory with detailed information about each step of the OAuth process.</p>
+        <p>These logs include:</p>
+        <ul>
+            <li>Request and response data</li>
+            <li>Authentication token exchange details</li>
+            <li>API calls to Shopify</li>
+            <li>Any errors that occur during the process</li>
+        </ul>
+    </div>
+    
+    <div id="result" class="result">
+        <h3 id="result-title">Result</h3>
+        <pre id="result-content">Results will appear here...</pre>
+    </div>
+
+    <script>
+        function connectToShopify() {
+            const shopUrl = document.getElementById('shop-url').value.trim();
+            
+            if (!shopUrl) {
+                showResult('Please enter a Shopify store URL', 'error');
+                return;
+            }
+            
+            // Clean up the URL
+            let cleanShopUrl = shopUrl.replace(/^https?:\/\//, '');
+            if (!cleanShopUrl.includes('.')) {
+                cleanShopUrl = `${cleanShopUrl}.myshopify.com`;
+            }
+            
+            showResult(`Connecting to ${cleanShopUrl}...`, 'info');
+            
+            // Redirect to the debug endpoint
+            window.location.href = `/api/shopify/auth/debug?shop=${encodeURIComponent(cleanShopUrl)}`;
+        }
+        
+        function showResult(message, type) {
+            const resultElement = document.getElementById('result');
+            const resultTitle = document.getElementById('result-title');
+            const resultContent = document.getElementById('result-content');
+            
+            resultElement.style.display = 'block';
+            resultElement.className = `result ${type}`;
+            
+            if (type === 'error') {
+                resultTitle.textContent = 'Error';
+            } else if (type === 'success') {
+                resultTitle.textContent = 'Success';
+            } else {
+                resultTitle.textContent = 'Status';
+            }
+            
+            resultContent.textContent = message;
+        }
+        
+        // Check URL parameters for error or success info
+        window.addEventListener('DOMContentLoaded', () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const error = urlParams.get('error');
+            const success = urlParams.get('success');
+            
+            if (error) {
+                showResult(`Error: ${error}`, 'error');
+            } else if (success) {
+                showResult(`Success: ${success}`, 'success');
+            }
+        });
+    </script>
+</body>
+</html>
