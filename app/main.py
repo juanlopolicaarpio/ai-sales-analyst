@@ -4,7 +4,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -13,6 +13,7 @@ from app.config import settings
 from app.db.database import get_async_db, Base, engine
 from app.api.routes import slack, whatsapp, email, health, auth, stores, preferences, shopify_auth
 from app.utils.logger import logger
+from app.api.middleware.security import get_current_user
 from app.api.middleware.error_handler import error_handler
 
 # Startup and shutdown events
@@ -162,6 +163,12 @@ async def get_shopify_debug_html():
     with open(debug_file, "r") as f:
         content = f.read()
     return HTMLResponse(content=content)
+
+# Test endpoint to verify authentication
+@app.get("/api/auth-test")
+async def auth_test(current_user = Depends(get_current_user)):
+    """Test endpoint to verify authentication."""
+    return {"status": "authenticated", "user_id": str(current_user.id)}
 
 # Root endpoint
 @app.get("/")

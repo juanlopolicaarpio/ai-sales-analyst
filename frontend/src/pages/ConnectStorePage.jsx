@@ -96,15 +96,41 @@ const ConnectStorePage = () => {
     }
   };
 
-  const handleShopifyRedirect = () => {
+// In ConnectStorePage.jsx, update the handleShopifyRedirect function:
+
+const handleShopifyRedirect = () => {
+    // Add at the top of your handleShopifyRedirect function
+console.log("Token in localStorage:", localStorage.getItem('token'));
+console.log("API headers:", api.defaults.headers);
+
+
     let cleanShopUrl = shopUrlInput.trim().replace(/^https?:\/\//, '');
     if (!cleanShopUrl.includes('.')) {
       cleanShopUrl = `${cleanShopUrl}.myshopify.com`;
     }
+    
     setShopifyConnecting(true);
-    window.location.href = `/api/shopify/auth?shop=${encodeURIComponent(cleanShopUrl)}`;
+    
+    // Use the API client which automatically includes the token
+    api.get(`/api/shopify/auth?shop=${encodeURIComponent(cleanShopUrl)}`, {
+      headers: {
+        'Accept': 'application/json'
+      }
+    })
+      .then(response => {
+        console.log("Shopify auth response:", response.data);
+        if (response.data && response.data.redirect_url) {
+          window.location.href = response.data.redirect_url;
+        } else {
+          throw new Error("No redirect URL received");
+        }
+      })
+      .catch(error => {
+        setShopifyConnecting(false);
+        console.error("Error connecting to Shopify:", error);
+        toast.error("Failed to connect to Shopify. Please try again.");
+      });
   };
-
   if (loading) {
     return (
       <Layout>

@@ -26,32 +26,91 @@ NONCE_STORE = {}
 
 @router.get("/shopify/auth")
 async def start_shopify_auth(
-    request: Request,  # Add request parameter for logging
+    request: Request,
     shop: str,
     db: AsyncSession = Depends(get_async_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(get_current_user)  # Make it optional
 ):
     """
     Start Shopify OAuth flow.
     """
-    # Log the incoming request
+    # Log the incoming request with full details
     log_request = await shopify_debugger.log_request(request, "shopify_auth")()
     
     try:
+        # Try to get user from token in header if available
+        auth_header = request.headers.get("Authorization", "No auth header")
+        logger.info(f"Auth header: {auth_header}")
+        
+        if current_user is None and auth_header.startswith("Bearer "):
+            token = auth_header.replace("Bearer ", "")
+            try:
+                from jose import jwt
+                payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+                user_id = payload.get("user_id")
+                if user_id:
+                    current_user = await crud.get_user(db, user_id)
+                    logger.info(f"Found user from header token: {user_id}")
+            except Exception as e:
+                logger.error(f"Error decoding token from header: {e}")
+
+        # If we still don't have a user, check for token in query params (less secure but helps debugging)
+        if current_user is None:
+            token = request.query_params.get("token")
+            if token:
+                try:
+                    from jose import jwt
+                    payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+                    user_id = payload.get("user_id")
+                    if user_id:
+                        current_user = await crud.get_user(db, user_id)
+                        logger.info(f"Found user from query token: {user_id}")
+                except Exception as e:
+                    logger.error(f"Error decoding token from query: {e}")
+        
+        # If still no user, use the debug flow
+        if current_user is None:
+            if settings.APP_ENV == "development" and settings.DEBUG:
+                logger.warning("No authenticated user found, using debug flow")
+                return await start_shopify_auth_debug(request, shop, db)
+            else:
+                error_msg = "Authentication required to connect Shopify store"
+                logger.error(f"Shopify auth error: {error_msg}")
+                shopify_debugger.log_response(
+                    {"status": "error", "message": error_msg},
+                    log_id=log_request
+                )
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": "Not authenticated"}
+                )
+
         if not shop.endswith('myshopify.com') and not shop.endswith('shopify.com'):
-            error_msg = "Invalid shop domain. Must be a myshopify.com domain."
-            logger.error(f"Shopify auth error: {error_msg}")
-            
-            # Log the error
-            shopify_debugger.log_response(
-                {"status": "error", "message": error_msg},
-                log_id=log_request
-            )
-            
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=error_msg
-            )
+            # Try to normalize shop URL
+            if "." not in shop:
+                shop = f"{shop}.myshopify.com"
+                logger.info(f"Normalized shop URL to: {shop}")
+            else:
+                error_msg = "Invalid shop domain. Must be a myshopify.com domain."
+                logger.error(f"Shopify auth error: {error_msg}")
+                
+                # Log the error
+                shopify_debugger.log_response(
+                    {"status": "error", "message": error_msg},
+                    log_id=log_request
+                )
+                
+                # Check if this is an API request or a browser request
+                accept_header = request.headers.get("accept", "")
+                if "application/json" in accept_header:
+                    # API request
+                    return JSONResponse(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        content={"detail": error_msg}
+                    )
+                else:
+                    # Browser request
+                    return RedirectResponse(f"{settings.FRONTEND_URL}/connect-failed?error=invalid_shop")
 
         nonce = secrets.token_hex(16)
         NONCE_STORE[nonce] = {
@@ -86,7 +145,14 @@ async def start_shopify_auth(
         }
         shopify_debugger.log_response(redirect_info, log_id=log_request)
         
-        return RedirectResponse(auth_url)
+        # Check if this is an API request or a browser request
+        accept_header = request.headers.get("accept", "")
+        if "application/json" in accept_header:
+            # API request - return JSON with redirect URL
+            return {"redirect_url": auth_url}
+        else:
+            # Browser request - redirect directly
+            return RedirectResponse(auth_url)
         
     except Exception as e:
         # Log any unexpected errors
@@ -95,8 +161,16 @@ async def start_shopify_auth(
             log_id=log_request,
             error=e
         )
-        # Re-raise the exception to maintain original behavior
-        raise
+        
+        # Handle API vs browser errors differently
+        accept_header = request.headers.get("accept", "")
+        if "application/json" in accept_header:
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"detail": str(e)}
+            )
+        else:
+            return RedirectResponse(f"{settings.FRONTEND_URL}/connect-failed?error={quote(str(e))}")
 
 @router.get("/shopify/callback")
 async def shopify_callback(
