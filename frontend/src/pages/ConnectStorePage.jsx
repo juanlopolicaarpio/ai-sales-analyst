@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { storesAPI } from '../utils/api';
-import Layout from '../components/Layout';
+import api, { storesAPI } from '../utils/api';import Layout from '../components/Layout';
 import toast from 'react-hot-toast';
 import { FiShoppingBag, FiPlus, FiCheck, FiAlertCircle, FiX } from 'react-icons/fi';
 
@@ -112,7 +111,7 @@ console.log("API headers:", api.defaults.headers);
     setShopifyConnecting(true);
     
     // Use the API client which automatically includes the token
-    api.get(`/api/shopify/auth?shop=${encodeURIComponent(cleanShopUrl)}`, {
+    api.get(`/shopify/auth?shop=${encodeURIComponent(cleanShopUrl)}`, {
       headers: {
         'Accept': 'application/json'
       }
