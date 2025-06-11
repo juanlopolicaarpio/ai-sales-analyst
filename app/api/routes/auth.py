@@ -1,11 +1,12 @@
 from datetime import datetime, timedelta
 from typing import Optional
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel, validator, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_async_db
@@ -32,11 +33,40 @@ class TokenData(BaseModel):
    user_id: Optional[str] = None
 
 class UserCreate(BaseModel):
-   email: str
+   email: EmailStr
    password: str
    full_name: Optional[str] = None
    slack_user_id: Optional[str] = None
    whatsapp_number: Optional[str] = None
+   
+   @validator('password')
+   def validate_password(cls, v):
+       if len(v) < 8:
+           raise ValueError('Password must be at least 8 characters long')
+       if not re.search(r'[A-Z]', v):
+           raise ValueError('Password must contain at least one uppercase letter')
+       if not re.search(r'[a-z]', v):
+           raise ValueError('Password must contain at least one lowercase letter')
+       if not re.search(r'[0-9]', v):
+           raise ValueError('Password must contain at least one digit')
+       return v
+   
+   @validator('slack_user_id')
+   def validate_slack_id(cls, v):
+       if v and not re.match(r'^[UW][A-Z0-9]{8,}$', v):
+           raise ValueError('Invalid Slack User ID format. It should start with U or W followed by alphanumeric characters')
+       return v
+   
+   @validator('whatsapp_number')
+   def validate_whatsapp(cls, v):
+       if v:
+           # Remove spaces and dashes
+           cleaned = re.sub(r'[\s\-]', '', v)
+           # Check if it starts with + and contains only digits after that
+           if not re.match(r'^\+\d{10,15}$', cleaned):
+               raise ValueError('Invalid WhatsApp number. Must start with + followed by country code and number (10-15 digits total)')
+           return cleaned
+       return v
 
 class UserResponse(BaseModel):
    id: str
@@ -132,6 +162,24 @@ async def register_user(user_data: UserCreate, db: AsyncSession = Depends(get_as
            detail="Email already registered"
        )
    
+   # Check if Slack ID is already in use
+   if user_data.slack_user_id:
+       existing_slack_user = await crud.get_user_by_slack_id(db, user_data.slack_user_id)
+       if existing_slack_user:
+           raise HTTPException(
+               status_code=status.HTTP_400_BAD_REQUEST,
+               detail="This Slack User ID is already registered with another account"
+           )
+   
+   # Check if WhatsApp number is already in use
+   if user_data.whatsapp_number:
+       existing_whatsapp_user = await crud.get_user_by_whatsapp(db, user_data.whatsapp_number)
+       if existing_whatsapp_user:
+           raise HTTPException(
+               status_code=status.HTTP_400_BAD_REQUEST,
+               detail="This WhatsApp number is already registered with another account"
+           )
+   
    # Hash the password
    hashed_password = get_password_hash(user_data.password)
    
@@ -145,6 +193,8 @@ async def register_user(user_data: UserCreate, db: AsyncSession = Depends(get_as
        "is_active": True,
        "is_superuser": False
    })
+   
+   logger.info(f"New user registered: {new_user.email}, Slack: {new_user.slack_user_id}, WhatsApp: {new_user.whatsapp_number}")
    
    # Create access token
    access_token_expires = timedelta(days=settings.ACCESS_TOKEN_EXPIRE_DAYS)
@@ -172,3 +222,55 @@ async def read_users_me(current_user = Depends(get_current_active_user)):
         "whatsapp_number": current_user.whatsapp_number,
     }
     return user_dict
+
+@router.put("/users/me", response_model=UserResponse)
+async def update_user_profile(
+    user_data: dict,
+    current_user = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_async_db)
+):
+    """Update user profile information"""
+    # Validate Slack ID if provided
+    if 'slack_user_id' in user_data and user_data['slack_user_id']:
+        if not re.match(r'^[UW][A-Z0-9]{8,}$', user_data['slack_user_id']):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid Slack User ID format"
+            )
+        # Check if already in use by another user
+        existing = await crud.get_user_by_slack_id(db, user_data['slack_user_id'])
+        if existing and existing.id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This Slack User ID is already in use"
+            )
+    
+    # Validate WhatsApp number if provided
+    if 'whatsapp_number' in user_data and user_data['whatsapp_number']:
+        cleaned = re.sub(r'[\s\-]', '', user_data['whatsapp_number'])
+        if not re.match(r'^\+\d{10,15}$', cleaned):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid WhatsApp number format"
+            )
+        user_data['whatsapp_number'] = cleaned
+        # Check if already in use by another user
+        existing = await crud.get_user_by_whatsapp(db, cleaned)
+        if existing and existing.id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This WhatsApp number is already in use"
+            )
+    
+    # Update user
+    updated_user = await crud.update_user(db, str(current_user.id), user_data)
+    
+    return {
+        "id": str(updated_user.id),
+        "email": updated_user.email,
+        "full_name": updated_user.full_name,
+        "is_active": updated_user.is_active,
+        "is_superuser": updated_user.is_superuser,
+        "slack_user_id": updated_user.slack_user_id,
+        "whatsapp_number": updated_user.whatsapp_number,
+    }

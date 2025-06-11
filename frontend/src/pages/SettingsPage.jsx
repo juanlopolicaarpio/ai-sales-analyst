@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { preferencesAPI } from '../utils/api';
+import { authAPI, preferencesAPI } from '../utils/api';
 import Layout from '../components/Layout';
 import toast from 'react-hot-toast';
 import { FiSettings, FiSave, FiBell, FiUser, FiCheckCircle } from 'react-icons/fi';
@@ -67,14 +67,28 @@ const SettingsPage = () => {
     e.preventDefault();
     try {
       setLoading(true);
-      // This would be replaced with your actual API call
-      // For now, we'll just simulate a success
-      await new Promise(resolve => setTimeout(resolve, 800));
+      // Update the user profile
+      await authAPI.updateProfile(profileData);
       await updateUserData();
       toast.success('Profile updated successfully!');
     } catch (error) {
       console.error('Failed to update profile:', error);
-      toast.error(error.response?.data?.detail || 'Failed to update profile.');
+      
+      // Handle validation errors
+      if (error.response?.data?.detail) {
+        const detail = error.response.data.detail;
+        if (Array.isArray(detail)) {
+          detail.forEach(err => {
+            if (err.msg) {
+              toast.error(err.msg);
+            }
+          });
+        } else {
+          toast.error(detail);
+        }
+      } else {
+        toast.error('Failed to update profile.');
+      }
     } finally {
       setLoading(false);
     }
@@ -166,7 +180,9 @@ const SettingsPage = () => {
                   className="form-input"
                   value={profileData.email}
                   onChange={handleProfileChange}
+                  disabled
                 />
+                <p className="mt-1 text-xs text-gray-500">Email cannot be changed</p>
               </div>
               
               <div className="border-t border-gray-200 pt-4 mt-4">
@@ -184,7 +200,7 @@ const SettingsPage = () => {
                       onChange={handleProfileChange}
                       placeholder="U01ABC123DEF"
                     />
-                    <p className="mt-1 text-xs text-gray-500">For receiving notifications via Slack</p>
+                    <p className="mt-1 text-xs text-gray-500">Format: Starts with U or W followed by alphanumeric characters (e.g., U01ABC123DEF)</p>
                   </div>
                   
                   <div>
@@ -198,7 +214,7 @@ const SettingsPage = () => {
                       onChange={handleProfileChange}
                       placeholder="+1234567890"
                     />
-                    <p className="mt-1 text-xs text-gray-500">Include country code (e.g., +1 for US)</p>
+                    <p className="mt-1 text-xs text-gray-500">Include country code (e.g., +1 for US, +44 for UK). 10-15 digits total.</p>
                   </div>
                 </div>
               </div>
