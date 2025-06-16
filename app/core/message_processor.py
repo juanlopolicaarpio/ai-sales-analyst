@@ -183,158 +183,201 @@ Ensure that the output is valid JSON and is an array. Do not include any markdow
         try:
             stores = await crud.get_stores_by_user(db, str(user.id))
             if not stores:
-                logger.warning(f"No stores found for user {user.id}")
-                return "I couldn't find any connected stores for your account. Please set up at least one store to get started.", None
-            
-            store = stores[0]
-            logger.info(f"Using store: {store.name} (ID: {store.id})")
+                logger.info(f"No stores found for user {user.id} - allowing general chat")
+                store = None
+            else:
+                store = stores[0]
+                logger.info(f"Using store: {store.name} (ID: {store.id})")
         except Exception as e:
             logger.error(f"Error getting user stores: {e}")
-            return "I encountered an error while accessing your store information. Please try again later or contact support.", None
+            store = None
         
-        # Extract intents using LangChain as primary extractor
-        try:
-            extracted_intents = await MessageProcessor.langchain_extract_intent(message_text)
-            logger.info(f"LangChain extracted intents: {extracted_intents}")
-        except Exception as e:
-            logger.error(f"LangChain extraction failed: {e}")
-            extracted_intents = [extract_query_intent(message_text)]
-            logger.info(f"Manual extraction fallback intent: {extracted_intents}")
+        # Build user context based on whether store exists
+        if store is not None:
+            user_context = {
+                "name": user.full_name or "Store Owner",
+                "store_name": store.name,
+                "platform": store.platform,
+                "timezone": timezone,
+                "has_connected_store": True
+            }
+        else:
+            user_context = {
+                "name": user.full_name or "User",
+                "has_connected_store": False,
+                "timezone": timezone
+            }
         
-        # Ensure we have a list of intents
-        if not isinstance(extracted_intents, list):
-            extracted_intents = [extracted_intents]
-        
-        # Process dates for each intent
-        for intent in extracted_intents:
-            # Fix the dates - convert string dates to datetime objects and update year if needed
-            if intent.get("time_range") == "custom":
-                try:
-                    # Handle specific_start_date
-                    if "specific_start_date" in intent:
-                        start_date_str = intent["specific_start_date"]
-                        if isinstance(start_date_str, str):
-                            import dateutil.parser
-                            from datetime import datetime
-                            
-                            # Parse the date string
-                            try:
-                                start_date = dateutil.parser.parse(start_date_str)
-                                
-                                # Update year to current year if it's not the current year
-                                current_year = datetime.now().year
-                                if start_date.year != current_year:
-                                    start_date = start_date.replace(year=current_year)
-                                
-                                # Convert to datetime object
-                                intent["specific_start_date"] = start_date
-                                logger.info(f"Converted start date to: {start_date}")
-                            except Exception as parse_error:
-                                logger.error(f"Error parsing start date: {parse_error}")
-                                intent["specific_start_date"] = None
-                    
-                    # Handle specific_end_date
-                    if "specific_end_date" in intent:
-                        end_date_str = intent["specific_end_date"]
-                        if isinstance(end_date_str, str):
-                            import dateutil.parser
-                            from datetime import datetime, time
-                            
-                            # Parse the date string
-                            try:
-                                end_date = dateutil.parser.parse(end_date_str)
-                                
-                                # Update year to current year if it's not the current year
-                                current_year = datetime.now().year
-                                if end_date.year != current_year:
-                                    end_date = end_date.replace(year=current_year)
-                                
-                                # Make sure end_date includes the whole day if time is midnight
-                                if end_date.hour == 0 and end_date.minute == 0 and end_date.second == 0:
-                                    end_date = datetime.combine(end_date.date(), time(23, 59, 59, 999999))
-                                
-                                # Convert to datetime object
-                                intent["specific_end_date"] = end_date
-                                logger.info(f"Converted end date to: {end_date}")
-                            except Exception as parse_error:
-                                logger.error(f"Error parsing end date: {parse_error}")
-                                intent["specific_end_date"] = None
-                except Exception as e:
-                    logger.error(f"Error processing dates for intent: {e}")
-        
-        # Build user context
-        user_context = {
-            "name": user.full_name or "Store Owner",
-            "store_name": store.name,
-            "platform": store.platform,
-            "timezone": timezone
-        }
-        
-        # Process each intent individually and collect responses
-        responses = []
-        for intent in extracted_intents:
-            # Fetch sales data using the intent's parameters.
+        # Handle different modes based on store availability
+        if store is not None:
+            # SALES ANALYTICS MODE - Extract intents and process sales data
             try:
-                # Get the specific dates
-                specific_start = intent.get("specific_start_date")
-                specific_end = intent.get("specific_end_date")
-                
-                # Pass them to get_sales_data
-                sales_data = await get_sales_data(
-                    db,
-                    str(store.id),
-                    intent["time_range"],
-                    user_context["timezone"],
-                    include_geo_data=intent.get("include_geo_data", False),
-                    top_products_limit=intent.get("top_products_count", 10),
-                    bottom_products_limit=intent.get("top_products_count", 10),
-                    query_type=intent.get("query_type", "top_products"),
-                    specific_start_date=specific_start,
-                    specific_end_date=specific_end
-                )
-                
-                # Update intent with additional info if needed
-                if sales_data:
-                    intent["actual_top_products_count"] = len(sales_data.get("top_products", []))
-                    intent["geo_regions_count"] = len(sales_data.get("geo_data", []))
-                    logger.info(f"Retrieved sales data for {intent.get('time_range')}: {sales_data.get('time_period', {}).get('start_date')} to {sales_data.get('time_period', {}).get('end_date')}")
+                extracted_intents = await MessageProcessor.langchain_extract_intent(message_text)
+                logger.info(f"LangChain extracted intents: {extracted_intents}")
             except Exception as e:
-                logger.error(f"Error getting sales data: {e}")
-                sales_data = None
+                logger.error(f"LangChain extraction failed: {e}")
+                extracted_intents = [extract_query_intent(message_text)]
+                logger.info(f"Manual extraction fallback intent: {extracted_intents}")
+            
+            # Ensure we have a list of intents
+            if not isinstance(extracted_intents, list):
+                extracted_intents = [extracted_intents]
+            
+            # Process dates for each intent
+            for intent in extracted_intents:
+                # Fix the dates - convert string dates to datetime objects and update year if needed
+                if intent.get("time_range") == "custom":
+                    try:
+                        # Handle specific_start_date
+                        if "specific_start_date" in intent:
+                            start_date_str = intent["specific_start_date"]
+                            if isinstance(start_date_str, str):
+                                import dateutil.parser
+                                from datetime import datetime
+                                
+                                # Parse the date string
+                                try:
+                                    start_date = dateutil.parser.parse(start_date_str)
+                                    
+                                    # Update year to current year if it's not the current year
+                                    current_year = datetime.now().year
+                                    if start_date.year != current_year:
+                                        start_date = start_date.replace(year=current_year)
+                                    
+                                    # Convert to datetime object
+                                    intent["specific_start_date"] = start_date
+                                    logger.info(f"Converted start date to: {start_date}")
+                                except Exception as parse_error:
+                                    logger.error(f"Error parsing start date: {parse_error}")
+                                    intent["specific_start_date"] = None
+                        
+                        # Handle specific_end_date
+                        if "specific_end_date" in intent:
+                            end_date_str = intent["specific_end_date"]
+                            if isinstance(end_date_str, str):
+                                import dateutil.parser
+                                from datetime import datetime, time
+                                
+                                # Parse the date string
+                                try:
+                                    end_date = dateutil.parser.parse(end_date_str)
+                                    
+                                    # Update year to current year if it's not the current year
+                                    current_year = datetime.now().year
+                                    if end_date.year != current_year:
+                                        end_date = end_date.replace(year=current_year)
+                                    
+                                    # Make sure end_date includes the whole day if time is midnight
+                                    if end_date.hour == 0 and end_date.minute == 0 and end_date.second == 0:
+                                        end_date = datetime.combine(end_date.date(), time(23, 59, 59, 999999))
+                                    
+                                    # Convert to datetime object
+                                    intent["specific_end_date"] = end_date
+                                    logger.info(f"Converted end date to: {end_date}")
+                                except Exception as parse_error:
+                                    logger.error(f"Error parsing end date: {parse_error}")
+                                    intent["specific_end_date"] = None
+                    except Exception as e:
+                        logger.error(f"Error processing dates for intent: {e}")
+            
+            # Process each intent individually and collect responses
+            responses = []
+            for intent in extracted_intents:
+                # Fetch sales data using the intent's parameters
+                try:
+                    # Get the specific dates
+                    specific_start = intent.get("specific_start_date")
+                    specific_end = intent.get("specific_end_date")
+                    
+                    # Pass them to get_sales_data
+                    sales_data = await get_sales_data(
+                        db,
+                        str(store.id),
+                        intent["time_range"],
+                        user_context["timezone"],
+                        include_geo_data=intent.get("include_geo_data", False),
+                        top_products_limit=intent.get("top_products_count", 10),
+                        bottom_products_limit=intent.get("top_products_count", 10),
+                        query_type=intent.get("query_type", "top_products"),
+                        specific_start_date=specific_start,
+                        specific_end_date=specific_end
+                    )
+                    
+                    # Update intent with additional info if needed
+                    if sales_data:
+                        intent["actual_top_products_count"] = len(sales_data.get("top_products", []))
+                        intent["geo_regions_count"] = len(sales_data.get("geo_data", []))
+                        logger.info(f"Retrieved sales data for {intent.get('time_range')}: {sales_data.get('time_period', {}).get('start_date')} to {sales_data.get('time_period', {}).get('end_date')}")
+                except Exception as e:
+                    logger.error(f"Error getting sales data: {e}")
+                    sales_data = None
 
-            # Generate AI response for this sub-intent
+                # Generate AI response for this sub-intent
+                try:
+                    sub_response = await sales_analyst_agent.analyze_query(
+                        query=message_text,
+                        user_context=user_context,
+                        sales_data=sales_data,
+                        intent=intent,
+                        conversation_id=conversation_id
+                    )
+                    responses.append(sub_response)
+                except Exception as e:
+                    logger.error(f"Error generating response for intent {intent}: {e}")
+                    responses.append("I'm sorry, I encountered an error processing this part of your request.")
+            
+            # Combine responses from all sub-intents
+            final_response = "\n\n".join(responses)
+            
+            # Log outgoing message with JSON-serializable metadata
             try:
-                sub_response = await sales_analyst_agent.analyze_query(
+                message_metadata = {"intents": extracted_intents, "has_sales_data": sales_data is not None}
+                metadata_serializable = json.loads(json.dumps(message_metadata, default=str))
+                await crud.create_message(db, {
+                    "user_id": str(user.id),
+                    "channel": channel,
+                    "direction": "outgoing",
+                    "content": final_response,
+                    "message_metadata": metadata_serializable
+                })
+                logger.debug("Logged outgoing message successfully")
+            except Exception as e:
+                logger.error(f"Error logging outgoing message: {e}")
+            
+            return final_response, {"intents": extracted_intents, "user": user_context}
+        
+        else:
+            # GENERAL CHAT MODE - No store connected, skip intent extraction
+            logger.info("Processing as general chat - no sales analysis")
+            
+            try:
+                # Simple AI response without sales context or intent extraction
+                final_response = await sales_analyst_agent.analyze_query(
                     query=message_text,
                     user_context=user_context,
-                    sales_data=sales_data,
-                    intent=intent,
+                    sales_data=None,  # No sales data
+                    intent=None,      # No intent extraction
                     conversation_id=conversation_id
                 )
-                responses.append(sub_response)
+                
+                # Log outgoing message
+                try:
+                    await crud.create_message(db, {
+                        "user_id": str(user.id),
+                        "channel": channel,
+                        "direction": "outgoing",
+                        "content": final_response,
+                        "message_metadata": {"mode": "general_chat", "has_sales_data": False}
+                    })
+                    logger.debug("Logged outgoing message successfully")
+                except Exception as e:
+                    logger.error(f"Error logging outgoing message: {e}")
+                
+                return final_response, {"mode": "general_chat", "user": user_context}
+                
             except Exception as e:
-                logger.error(f"Error generating response for intent {intent}: {e}")
-                responses.append("I'm sorry, I encountered an error processing this part of your request.")
-        
-        # Combine responses from all sub-intents
-        final_response = "\n\n".join(responses)
-        
-        # Log outgoing message with JSON-serializable metadata
-        try:
-            message_metadata = {"intents": extracted_intents, "has_sales_data": sales_data is not None}
-            metadata_serializable = json.loads(json.dumps(message_metadata, default=str))
-            await crud.create_message(db, {
-                "user_id": str(user.id),
-                "channel": channel,
-                "direction": "outgoing",
-                "content": final_response,
-                "message_metadata": metadata_serializable
-            })
-            logger.debug("Logged outgoing message successfully")
-        except Exception as e:
-            logger.error(f"Error logging outgoing message: {e}")
-        
-        return final_response, {"intents": extracted_intents, "user": user_context}
+                logger.error(f"Error generating general chat response: {e}")
+                return "I'm here to help! Feel free to ask me anything, or if you'd like to analyze sales data, you can connect a store first.", None
     
     @staticmethod
     async def clear_user_memory(user_identifier: Dict[str, str], channel: str):
